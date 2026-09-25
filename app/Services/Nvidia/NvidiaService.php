@@ -64,15 +64,14 @@ class NvidiaService
 
     /**
      * Mengirim request chat ke NVIDIA NIM.
-     *
-     * Timeout dibuat 120 detik karena model dapat membutuhkan
-     * waktu lebih lama untuk menghasilkan response.
      */
     public function chat(
         array $messages,
         float $temperature = 0.2,
-        int $maxTokens = 800
+        int $maxTokens = 300
     ): array {
+        $totalStart = microtime(true);
+
         if (!$this->hasApiKey()) {
             Log::warning(
                 'NvidiaService: API key NVIDIA tidak tersedia.'
@@ -86,24 +85,61 @@ class NvidiaService
 
         $url = "{$this->baseUrl}/chat/completions";
 
+        /*
+        |--------------------------------------------------------------------------
+        | Hitung ukuran prompt untuk profiling
+        |--------------------------------------------------------------------------
+        */
+        $systemChars = 0;
+        $userChars = 0;
+        $totalChars = 0;
+
+        foreach ($messages as $message) {
+            $content = (string) ($message['content'] ?? '');
+            $length = strlen($content);
+
+            $totalChars += $length;
+
+            if (($message['role'] ?? '') === 'system') {
+                $systemChars += $length;
+            }
+
+            if (($message['role'] ?? '') === 'user') {
+                $userChars += $length;
+            }
+        }
+
         try {
             Log::info(
-                'NvidiaService: Mengirim request ke NVIDIA.',
+                '[NVIDIA] ===== START CHAT =====',
                 [
                     'url' => $url,
                     'model' => $this->model,
                     'message_count' => count($messages),
+                    'system_chars' => $systemChars,
+                    'user_chars' => $userChars,
+                    'total_chars' => $totalChars,
+                    'estimated_prompt_tokens' => (int) ceil($totalChars / 4),
                     'max_tokens' => $maxTokens,
+                    'temperature' => $temperature,
                     'timeout' => 120,
+                    'connect_timeout' => 15,
                 ]
             );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Request ke NVIDIA
+            |--------------------------------------------------------------------------
+            */
+            $requestStart = microtime(true);
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . trim($this->apiKey),
                 'Content-Type' => 'application/json',
                 'Accept' => 'application/json',
             ])
-                /**
+                /*
                  * Paksa HTTP/1.1.
                  *
                  * Ini membantu menghindari masalah tertentu
@@ -127,10 +163,31 @@ class NvidiaService
                     'reasoning_budget' => 0,
                 ]);
 
-            /**
-             * Request berhasil.
-             */
+            $requestDuration = microtime(true) - $requestStart;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Catat hasil HTTP
+            |--------------------------------------------------------------------------
+            */
+            Log::info(
+                '[NVIDIA] HTTP request selesai',
+                [
+                    'duration_seconds' => round($requestDuration, 4),
+                    'http_status' => $response->status(),
+                    'successful' => $response->successful(),
+                    'response_bytes' => strlen($response->body()),
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Request berhasil
+            |--------------------------------------------------------------------------
+            */
             if ($response->successful()) {
+                $parseStart = microtime(true);
+
                 $data = $response->json();
 
                 $content = $data['choices'][0]['message']['content']
@@ -139,21 +196,54 @@ class NvidiaService
                 $tokens = $data['usage']['total_tokens']
                     ?? null;
 
+                $promptTokens = $data['usage']['prompt_tokens']
+                    ?? null;
+
+                $completionTokens = $data['usage']['completion_tokens']
+                    ?? null;
+
+                $finishReason = $data['choices'][0]['finish_reason']
+                    ?? null;
+
+                $parseDuration = microtime(true) - $parseStart;
+
+                $totalDuration = microtime(true) - $totalStart;
+
                 Log::info(
-                    'NvidiaService: Request NVIDIA berhasil.',
+                    '[NVIDIA] Request NVIDIA berhasil',
                     [
-                        'status' => $response->status(),
+                        'http_status' => $response->status(),
+                        'request_seconds' => round($requestDuration, 4),
+                        'parse_seconds' => round($parseDuration, 4),
+                        'total_seconds' => round($totalDuration, 4),
+
                         'tokens_used' => $tokens,
+                        'prompt_tokens' => $promptTokens,
+                        'completion_tokens' => $completionTokens,
+
+                        'finish_reason' => $finishReason,
+
+                        'content_chars' => strlen($content),
+                        'has_content' => !empty(trim($content)),
                     ]
                 );
 
-                /**
-                 * Jika API berhasil tetapi content kosong,
-                 * gunakan fallback.
-                 */
+                /*
+                |--------------------------------------------------------------------------
+                | Jika API berhasil tetapi content kosong
+                |--------------------------------------------------------------------------
+                */
                 if (empty(trim($content))) {
                     Log::warning(
-                        'NvidiaService: NVIDIA mengembalikan response kosong.'
+                        '[NVIDIA] API berhasil tetapi content kosong',
+                        [
+                            'finish_reason' => $finishReason,
+                            'tokens_used' => $tokens,
+                            'request_seconds' => round(
+                                $requestDuration,
+                                4
+                            ),
+                        ]
                     );
 
                     return $this->generateFallbackResponse(
@@ -162,24 +252,51 @@ class NvidiaService
                     );
                 }
 
+                Log::info(
+                    '[NVIDIA] ===== END CHAT SUCCESS =====',
+                    [
+                        'total_seconds' => round(
+                            $totalDuration,
+                            4
+                        ),
+                    ]
+                );
+
                 return [
                     'content' => $content,
                     'tokens_used' => $tokens,
+                    'prompt_tokens' => $promptTokens,
+                    'completion_tokens' => $completionTokens,
+                    'finish_reason' => $finishReason,
                     'model' => $this->model,
                     'status' => 'success',
                     'source' => 'nvidia',
                     'fallback_reason' => null,
                     'http_status' => $response->status(),
+                    'request_seconds' => round($requestDuration, 4),
+                    'total_seconds' => round($totalDuration, 4),
                 ];
             }
 
-            /**
-             * NVIDIA mengembalikan HTTP error.
-             */
+            /*
+            |--------------------------------------------------------------------------
+            | NVIDIA mengembalikan HTTP error
+            |--------------------------------------------------------------------------
+            */
+            $totalDuration = microtime(true) - $totalStart;
+
             Log::error(
-                'NvidiaService: NVIDIA API mengembalikan HTTP error.',
+                '[NVIDIA] NVIDIA API mengembalikan HTTP error',
                 [
                     'status' => $response->status(),
+                    'request_seconds' => round(
+                        $requestDuration,
+                        4
+                    ),
+                    'total_seconds' => round(
+                        $totalDuration,
+                        4
+                    ),
                     'body' => mb_substr(
                         $response->body(),
                         0,
@@ -196,14 +313,22 @@ class NvidiaService
 
         } catch (ConnectionException $e) {
 
-            /**
-             * Error koneksi / timeout.
-             */
+            $totalDuration = microtime(true) - $totalStart;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Error koneksi / timeout
+            |--------------------------------------------------------------------------
+            */
             Log::error(
-                'NvidiaService: Connection error saat menghubungi NVIDIA.',
+                '[NVIDIA] Connection error / timeout',
                 [
                     'message' => $e->getMessage(),
                     'model' => $this->model,
+                    'total_seconds' => round(
+                        $totalDuration,
+                        4
+                    ),
                 ]
             );
 
@@ -214,14 +339,22 @@ class NvidiaService
 
         } catch (\Throwable $e) {
 
-            /**
-             * Error umum lainnya.
-             */
+            $totalDuration = microtime(true) - $totalStart;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Error umum lainnya
+            |--------------------------------------------------------------------------
+            */
             Log::error(
-                'NvidiaService: Exception tidak terduga.',
+                '[NVIDIA] Exception tidak terduga',
                 [
                     'type' => get_class($e),
                     'message' => $e->getMessage(),
+                    'total_seconds' => round(
+                        $totalDuration,
+                        4
+                    ),
                 ]
             );
 
@@ -237,9 +370,11 @@ class NvidiaService
      */
     public function generateEmbedding(string $text): ?array
     {
+        $totalStart = microtime(true);
+
         if (!$this->hasApiKey()) {
             Log::warning(
-                'NvidiaService: API key tidak tersedia untuk embedding.'
+                '[NVIDIA] API key tidak tersedia untuk embedding.'
             );
 
             return $this->generateMockEmbedding($text);
@@ -248,12 +383,27 @@ class NvidiaService
         try {
             $url = "{$this->baseUrl}/embeddings";
 
+            $textLength = strlen($text);
+
             Log::info(
-                'NvidiaService: Mengirim request embedding ke NVIDIA.',
+                '[NVIDIA] ===== START EMBEDDING =====',
                 [
                     'model' => $this->embeddingModel,
+                    'text_chars' => $textLength,
+                    'estimated_tokens' => (int) ceil(
+                        $textLength / 4
+                    ),
+                    'timeout' => 30,
+                    'connect_timeout' => 10,
                 ]
             );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Request embedding
+            |--------------------------------------------------------------------------
+            */
+            $requestStart = microtime(true);
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . trim($this->apiKey),
@@ -271,17 +421,60 @@ class NvidiaService
                     'encoding_format' => 'float',
                 ]);
 
+            $requestDuration = microtime(true) - $requestStart;
+
+            Log::info(
+                '[NVIDIA] Embedding HTTP selesai',
+                [
+                    'duration_seconds' => round(
+                        $requestDuration,
+                        4
+                    ),
+                    'http_status' => $response->status(),
+                    'successful' => $response->successful(),
+                    'response_bytes' => strlen($response->body()),
+                ]
+            );
+
             if ($response->successful()) {
+                $parseStart = microtime(true);
+
                 $data = $response->json();
 
                 $embedding = $data['data'][0]['embedding']
                     ?? null;
 
+                $parseDuration = microtime(true) - $parseStart;
+
+                $totalDuration = microtime(true) - $totalStart;
+
                 if ($embedding !== null) {
                     Log::info(
-                        'NvidiaService: Embedding berhasil.',
+                        '[NVIDIA] Embedding berhasil',
                         [
                             'dimension' => count($embedding),
+                            'request_seconds' => round(
+                                $requestDuration,
+                                4
+                            ),
+                            'parse_seconds' => round(
+                                $parseDuration,
+                                4
+                            ),
+                            'total_seconds' => round(
+                                $totalDuration,
+                                4
+                            ),
+                        ]
+                    );
+                } else {
+                    Log::warning(
+                        '[NVIDIA] Response embedding tidak memiliki vector',
+                        [
+                            'total_seconds' => round(
+                                $totalDuration,
+                                4
+                            ),
                         ]
                     );
                 }
@@ -289,10 +482,20 @@ class NvidiaService
                 return $embedding;
             }
 
+            $totalDuration = microtime(true) - $totalStart;
+
             Log::warning(
-                'NvidiaService: Gagal generate embedding.',
+                '[NVIDIA] Gagal generate embedding',
                 [
                     'status' => $response->status(),
+                    'request_seconds' => round(
+                        $requestDuration,
+                        4
+                    ),
+                    'total_seconds' => round(
+                        $totalDuration,
+                        4
+                    ),
                     'body' => mb_substr(
                         $response->body(),
                         0,
@@ -305,10 +508,16 @@ class NvidiaService
 
         } catch (\Throwable $e) {
 
+            $totalDuration = microtime(true) - $totalStart;
+
             Log::error(
-                'NvidiaService: Exception saat generate embedding.',
+                '[NVIDIA] Exception saat generate embedding',
                 [
                     'message' => $e->getMessage(),
+                    'total_seconds' => round(
+                        $totalDuration,
+                        4
+                    ),
                 ]
             );
 
@@ -356,11 +565,16 @@ class NvidiaService
                 $reasonText
             ),
             'tokens_used' => null,
+            'prompt_tokens' => null,
+            'completion_tokens' => null,
+            'finish_reason' => null,
             'model' => 'local-fallback',
             'status' => 'fallback',
             'source' => 'local',
             'fallback_reason' => $reason,
             'http_status' => $httpStatus,
+            'request_seconds' => null,
+            'total_seconds' => null,
         ];
     }
 
