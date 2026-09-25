@@ -9,8 +9,11 @@ use Illuminate\Support\Facades\Log;
 class NvidiaService
 {
     protected ?string $apiKey;
+
     protected string $baseUrl;
+
     protected string $model;
+
     protected string $embeddingModel;
 
     public function __construct()
@@ -37,7 +40,8 @@ class NvidiaService
     }
 
     /**
-     * Cek apakah API key NVIDIA tersedia dan memiliki format yang benar.
+     * Mengecek apakah API key NVIDIA tersedia
+     * dan memiliki format nvapi-.
      */
     public function hasApiKey(): bool
     {
@@ -46,15 +50,14 @@ class NvidiaService
     }
 
     /**
-     * Mendapatkan status konfigurasi NVIDIA.
-     *
-     * API key tidak pernah dikembalikan penuh.
+     * Status konfigurasi NVIDIA.
      */
     public function getStatus(): array
     {
         return [
             'configured' => $this->hasApiKey(),
             'model' => $this->model,
+            'embedding_model' => $this->embeddingModel,
             'base_url' => $this->baseUrl,
         ];
     }
@@ -62,22 +65,14 @@ class NvidiaService
     /**
      * Mengirim request chat ke NVIDIA NIM.
      *
-     * @param array $messages
-     * @param float $temperature
-     * @param int $maxTokens
-     * @return array
+     * Timeout dibuat 120 detik karena model dapat membutuhkan
+     * waktu lebih lama untuk menghasilkan response.
      */
     public function chat(
         array $messages,
         float $temperature = 0.2,
         int $maxTokens = 800
     ): array {
-        /*
-        |--------------------------------------------------------------------------
-        | 1. Cek API Key
-        |--------------------------------------------------------------------------
-        */
-
         if (!$this->hasApiKey()) {
             Log::warning(
                 'NvidiaService: API key NVIDIA tidak tersedia.'
@@ -89,19 +84,7 @@ class NvidiaService
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | 2. Persiapkan URL
-        |--------------------------------------------------------------------------
-        */
-
         $url = "{$this->baseUrl}/chat/completions";
-
-        /*
-        |--------------------------------------------------------------------------
-        | 3. Kirim request ke NVIDIA
-        |--------------------------------------------------------------------------
-        */
 
         try {
             Log::info(
@@ -111,6 +94,7 @@ class NvidiaService
                     'model' => $this->model,
                     'message_count' => count($messages),
                     'max_tokens' => $maxTokens,
+                    'timeout' => 120,
                 ]
             );
 
@@ -119,76 +103,33 @@ class NvidiaService
                 'Content-Type' => 'application/json',
                 'Accept' => 'application/json',
             ])
-                /*
-                |--------------------------------------------------------------------------
-                | Waktu untuk membuat koneksi.
-                |--------------------------------------------------------------------------
-                */
-                ->connectTimeout(10)
-
-                /*
-                |--------------------------------------------------------------------------
-                | Request NVIDIA kamu terbukti membutuhkan sekitar 55 detik.
-                | Jadi 30 detik terlalu pendek.
-                |--------------------------------------------------------------------------
-                */
-                ->timeout(45)
-
+                /**
+                 * Paksa HTTP/1.1.
+                 *
+                 * Ini membantu menghindari masalah tertentu
+                 * pada koneksi HTTP/2/cURL.
+                 */
+                ->withOptions([
+                    'version' => CURL_HTTP_VERSION_1_1,
+                ])
+                ->connectTimeout(15)
+                ->timeout(120)
                 ->post($url, [
                     'model' => $this->model,
-
                     'messages' => $messages,
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Temperature
-                    |--------------------------------------------------------------------------
-                    */
                     'temperature' => min(
                         max($temperature, 0),
                         1
                     ),
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Membatasi probabilitas token.
-                    |--------------------------------------------------------------------------
-                    */
                     'top_p' => 0.95,
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Batas output.
-                    |--------------------------------------------------------------------------
-                    */
                     'max_tokens' => $maxTokens,
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Gunakan response JSON biasa.
-                    |
-                    | Kita tidak menggunakan streaming karena aplikasi Laravel
-                    | kita membutuhkan satu response lengkap.
-                    |--------------------------------------------------------------------------
-                    */
                     'stream' => false,
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Tidak membutuhkan reasoning untuk tahap awal.
-                    |
-                    | Ini membantu mengurangi waktu pemrosesan.
-                    |--------------------------------------------------------------------------
-                    */
                     'reasoning_budget' => 0,
                 ]);
 
-            /*
-            |--------------------------------------------------------------------------
-            | 4. Jika HTTP 2xx
-            |--------------------------------------------------------------------------
-            */
-
+            /**
+             * Request berhasil.
+             */
             if ($response->successful()) {
                 $data = $response->json();
 
@@ -206,12 +147,10 @@ class NvidiaService
                     ]
                 );
 
-                /*
-                |--------------------------------------------------------------------------
-                | Response kosong
-                |--------------------------------------------------------------------------
-                */
-
+                /**
+                 * Jika API berhasil tetapi content kosong,
+                 * gunakan fallback.
+                 */
                 if (empty(trim($content))) {
                     Log::warning(
                         'NvidiaService: NVIDIA mengembalikan response kosong.'
@@ -222,12 +161,6 @@ class NvidiaService
                         'EMPTY_RESPONSE'
                     );
                 }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Response sukses
-                |--------------------------------------------------------------------------
-                */
 
                 return [
                     'content' => $content,
@@ -240,12 +173,9 @@ class NvidiaService
                 ];
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | 5. HTTP error dari NVIDIA
-            |--------------------------------------------------------------------------
-            */
-
+            /**
+             * NVIDIA mengembalikan HTTP error.
+             */
             Log::error(
                 'NvidiaService: NVIDIA API mengembalikan HTTP error.',
                 [
@@ -266,19 +196,9 @@ class NvidiaService
 
         } catch (ConnectionException $e) {
 
-            /*
-            |--------------------------------------------------------------------------
-            | 6. Connection error / timeout
-            |--------------------------------------------------------------------------
-            |
-            | PENTING:
-            | Ini BUKAN berarti API key tidak terbaca.
-            |
-            | Sebelumnya aplikasi kamu salah menampilkan timeout sebagai
-            | masalah API key.
-            |--------------------------------------------------------------------------
-            */
-
+            /**
+             * Error koneksi / timeout.
+             */
             Log::error(
                 'NvidiaService: Connection error saat menghubungi NVIDIA.',
                 [
@@ -294,12 +214,9 @@ class NvidiaService
 
         } catch (\Throwable $e) {
 
-            /*
-            |--------------------------------------------------------------------------
-            | 7. Error lainnya
-            |--------------------------------------------------------------------------
-            */
-
+            /**
+             * Error umum lainnya.
+             */
             Log::error(
                 'NvidiaService: Exception tidak terduga.',
                 [
@@ -317,17 +234,9 @@ class NvidiaService
 
     /**
      * Generate embedding menggunakan NVIDIA.
-     *
-     * Jika NVIDIA gagal, sistem menggunakan mock embedding lokal.
      */
     public function generateEmbedding(string $text): ?array
     {
-        /*
-        |--------------------------------------------------------------------------
-        | Cek API Key
-        |--------------------------------------------------------------------------
-        */
-
         if (!$this->hasApiKey()) {
             Log::warning(
                 'NvidiaService: API key tidak tersedia untuk embedding.'
@@ -351,6 +260,9 @@ class NvidiaService
                 'Content-Type' => 'application/json',
                 'Accept' => 'application/json',
             ])
+                ->withOptions([
+                    'version' => CURL_HTTP_VERSION_1_1,
+                ])
                 ->connectTimeout(10)
                 ->timeout(30)
                 ->post($url, [
@@ -359,24 +271,23 @@ class NvidiaService
                     'encoding_format' => 'float',
                 ]);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Embedding sukses
-            |--------------------------------------------------------------------------
-            */
-
             if ($response->successful()) {
                 $data = $response->json();
 
-                return $data['data'][0]['embedding']
+                $embedding = $data['data'][0]['embedding']
                     ?? null;
-            }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Embedding HTTP error
-            |--------------------------------------------------------------------------
-            */
+                if ($embedding !== null) {
+                    Log::info(
+                        'NvidiaService: Embedding berhasil.',
+                        [
+                            'dimension' => count($embedding),
+                        ]
+                    );
+                }
+
+                return $embedding;
+            }
 
             Log::warning(
                 'NvidiaService: Gagal generate embedding.',
@@ -406,15 +317,7 @@ class NvidiaService
     }
 
     /**
-     * Membuat response fallback.
-     *
-     * Fallback sekarang membedakan:
-     *
-     * API_KEY_MISSING
-     * API_ERROR
-     * CONNECTION_ERROR
-     * EMPTY_RESPONSE
-     * EXCEPTION
+     * Membuat response fallback ketika NVIDIA tidak tersedia.
      */
     protected function generateFallbackResponse(
         array $messages,
@@ -452,23 +355,17 @@ class NvidiaService
                 $messages,
                 $reasonText
             ),
-
             'tokens_used' => null,
-
             'model' => 'local-fallback',
-
             'status' => 'fallback',
-
             'source' => 'local',
-
             'fallback_reason' => $reason,
-
             'http_status' => $httpStatus,
         ];
     }
 
     /**
-     * Membuat response fallback lokal.
+     * Isi response fallback.
      */
     protected function buildFallbackContent(
         array $messages,
@@ -483,16 +380,20 @@ class NvidiaService
     }
 
     /**
-     * Membuat mock embedding lokal.
+     * Mock embedding ketika NVIDIA tidak tersedia.
      *
-     * Digunakan jika NVIDIA embedding tidak tersedia.
+     * Digunakan agar sistem RAG tetap dapat berjalan
+     * saat API key atau koneksi NVIDIA bermasalah.
      */
     protected function generateMockEmbedding(
         string $text
     ): array {
         $dimension = 384;
 
-        $hash = hash('sha256', $text);
+        $hash = hash(
+            'sha256',
+            $text
+        );
 
         $embedding = [];
 
@@ -501,7 +402,11 @@ class NvidiaService
             $index = ($i * 2) % strlen($hash);
 
             $value = hexdec(
-                substr($hash, $index, 2)
+                substr(
+                    $hash,
+                    $index,
+                    2
+                )
             );
 
             $embedding[] = ($value / 127.5) - 1;
