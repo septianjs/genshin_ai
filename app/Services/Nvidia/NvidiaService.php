@@ -2,6 +2,7 @@
 
 namespace App\Services\Nvidia;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -15,198 +16,497 @@ class NvidiaService
     public function __construct()
     {
         $this->apiKey = config('services.nvidia.api_key');
-        $this->baseUrl = rtrim(config('services.nvidia.base_url', 'https://integrate.api.nvidia.com/v1'), '/');
-        $this->model = config('services.nvidia.model', 'nvidia/nemotron-3.5-lightning-30b-a3b');
-        $this->embeddingModel = config('services.nvidia.embedding_model', 'nvidia/nemotron-3-embed-1b');
+
+        $this->baseUrl = rtrim(
+            config(
+                'services.nvidia.base_url',
+                'https://integrate.api.nvidia.com/v1'
+            ),
+            '/'
+        );
+
+        $this->model = config(
+            'services.nvidia.model',
+            'nvidia/nemotron-3.5-lightning-30b-a3b'
+        );
+
+        $this->embeddingModel = config(
+            'services.nvidia.embedding_model',
+            'nvidia/nemotron-3-embed-1b'
+        );
     }
 
     /**
-     * Memeriksa apakah API Key NVIDIA sudah terkonfigurasi.
+     * Cek apakah API key NVIDIA tersedia dan memiliki format yang benar.
      */
     public function hasApiKey(): bool
     {
-        return !empty($this->apiKey) && str_starts_with($this->apiKey, 'nvapi-');
+        return !empty($this->apiKey)
+            && str_starts_with(trim($this->apiKey), 'nvapi-');
     }
 
     /**
-     * Mengirim pesan chat completions ke model Nemotron.
+     * Mendapatkan status konfigurasi NVIDIA.
      *
-     * @param array $messages Daftar pesan [['role' => 'user/system/assistant', 'content' => '...']]
+     * API key tidak pernah dikembalikan penuh.
+     */
+    public function getStatus(): array
+    {
+        return [
+            'configured' => $this->hasApiKey(),
+            'model' => $this->model,
+            'base_url' => $this->baseUrl,
+        ];
+    }
+
+    /**
+     * Mengirim request chat ke NVIDIA NIM.
+     *
+     * @param array $messages
      * @param float $temperature
      * @param int $maxTokens
-     * @return array Respon dari model ['content' => string, 'tokens_used' => int, 'model' => string]
+     * @return array
      */
-    public function chat(array $messages, float $temperature = 0.2, int $maxTokens = 1500): array
-    {
+    public function chat(
+        array $messages,
+        float $temperature = 0.2,
+        int $maxTokens = 800
+    ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. Cek API Key
+        |--------------------------------------------------------------------------
+        */
+
         if (!$this->hasApiKey()) {
-            return $this->generateFallbackResponse($messages);
+            Log::warning(
+                'NvidiaService: API key NVIDIA tidak tersedia.'
+            );
+
+            return $this->generateFallbackResponse(
+                $messages,
+                'API_KEY_MISSING'
+            );
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | 2. Persiapkan URL
+        |--------------------------------------------------------------------------
+        */
+
+        $url = "{$this->baseUrl}/chat/completions";
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. Kirim request ke NVIDIA
+        |--------------------------------------------------------------------------
+        */
+
         try {
+            Log::info(
+                'NvidiaService: Mengirim request ke NVIDIA.',
+                [
+                    'url' => $url,
+                    'model' => $this->model,
+                    'message_count' => count($messages),
+                    'max_tokens' => $maxTokens,
+                ]
+            );
+
             $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Authorization' => 'Bearer ' . trim($this->apiKey),
                 'Content-Type' => 'application/json',
                 'Accept' => 'application/json',
-            ])->timeout(30)->post("{$this->baseUrl}/chat/completions", [
-                'model' => $this->model,
-                'messages' => $messages,
-                'temperature' => $temperature,
-                'max_tokens' => $maxTokens,
-            ]);
+            ])
+                /*
+                |--------------------------------------------------------------------------
+                | Waktu untuk membuat koneksi.
+                |--------------------------------------------------------------------------
+                */
+                ->connectTimeout(10)
+
+                /*
+                |--------------------------------------------------------------------------
+                | Request NVIDIA kamu terbukti membutuhkan sekitar 55 detik.
+                | Jadi 30 detik terlalu pendek.
+                |--------------------------------------------------------------------------
+                */
+                ->timeout(45)
+
+                ->post($url, [
+                    'model' => $this->model,
+
+                    'messages' => $messages,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Temperature
+                    |--------------------------------------------------------------------------
+                    */
+                    'temperature' => min(
+                        max($temperature, 0),
+                        1
+                    ),
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Membatasi probabilitas token.
+                    |--------------------------------------------------------------------------
+                    */
+                    'top_p' => 0.95,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Batas output.
+                    |--------------------------------------------------------------------------
+                    */
+                    'max_tokens' => $maxTokens,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Gunakan response JSON biasa.
+                    |
+                    | Kita tidak menggunakan streaming karena aplikasi Laravel
+                    | kita membutuhkan satu response lengkap.
+                    |--------------------------------------------------------------------------
+                    */
+                    'stream' => false,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Tidak membutuhkan reasoning untuk tahap awal.
+                    |
+                    | Ini membantu mengurangi waktu pemrosesan.
+                    |--------------------------------------------------------------------------
+                    */
+                    'reasoning_budget' => 0,
+                ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | 4. Jika HTTP 2xx
+            |--------------------------------------------------------------------------
+            */
 
             if ($response->successful()) {
                 $data = $response->json();
-                $content = $data['choices'][0]['message']['content'] ?? '';
-                $tokens = $data['usage']['total_tokens'] ?? null;
+
+                $content = $data['choices'][0]['message']['content']
+                    ?? '';
+
+                $tokens = $data['usage']['total_tokens']
+                    ?? null;
+
+                Log::info(
+                    'NvidiaService: Request NVIDIA berhasil.',
+                    [
+                        'status' => $response->status(),
+                        'tokens_used' => $tokens,
+                    ]
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | Response kosong
+                |--------------------------------------------------------------------------
+                */
+
+                if (empty(trim($content))) {
+                    Log::warning(
+                        'NvidiaService: NVIDIA mengembalikan response kosong.'
+                    );
+
+                    return $this->generateFallbackResponse(
+                        $messages,
+                        'EMPTY_RESPONSE'
+                    );
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Response sukses
+                |--------------------------------------------------------------------------
+                */
 
                 return [
                     'content' => $content,
                     'tokens_used' => $tokens,
                     'model' => $this->model,
                     'status' => 'success',
+                    'source' => 'nvidia',
+                    'fallback_reason' => null,
+                    'http_status' => $response->status(),
                 ];
             }
 
-            Log::error("NvidiaService: Error respon API ({$response->status()}): " . $response->body());
-            return $this->generateFallbackResponse($messages);
-        } catch (\Exception $e) {
-            Log::error("NvidiaService: Exception saat memanggil NVIDIA NIM: " . $e->getMessage());
-            return $this->generateFallbackResponse($messages);
+            /*
+            |--------------------------------------------------------------------------
+            | 5. HTTP error dari NVIDIA
+            |--------------------------------------------------------------------------
+            */
+
+            Log::error(
+                'NvidiaService: NVIDIA API mengembalikan HTTP error.',
+                [
+                    'status' => $response->status(),
+                    'body' => mb_substr(
+                        $response->body(),
+                        0,
+                        2000
+                    ),
+                ]
+            );
+
+            return $this->generateFallbackResponse(
+                $messages,
+                'API_ERROR',
+                $response->status()
+            );
+
+        } catch (ConnectionException $e) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | 6. Connection error / timeout
+            |--------------------------------------------------------------------------
+            |
+            | PENTING:
+            | Ini BUKAN berarti API key tidak terbaca.
+            |
+            | Sebelumnya aplikasi kamu salah menampilkan timeout sebagai
+            | masalah API key.
+            |--------------------------------------------------------------------------
+            */
+
+            Log::error(
+                'NvidiaService: Connection error saat menghubungi NVIDIA.',
+                [
+                    'message' => $e->getMessage(),
+                    'model' => $this->model,
+                ]
+            );
+
+            return $this->generateFallbackResponse(
+                $messages,
+                'CONNECTION_ERROR'
+            );
+
+        } catch (\Throwable $e) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | 7. Error lainnya
+            |--------------------------------------------------------------------------
+            */
+
+            Log::error(
+                'NvidiaService: Exception tidak terduga.',
+                [
+                    'type' => get_class($e),
+                    'message' => $e->getMessage(),
+                ]
+            );
+
+            return $this->generateFallbackResponse(
+                $messages,
+                'EXCEPTION'
+            );
         }
     }
 
     /**
-     * Mengonversi teks menjadi array vektor embedding via model Nemotron 3 Embed.
+     * Generate embedding menggunakan NVIDIA.
      *
-     * @param string $text
-     * @return array<float>|null
+     * Jika NVIDIA gagal, sistem menggunakan mock embedding lokal.
      */
     public function generateEmbedding(string $text): ?array
     {
+        /*
+        |--------------------------------------------------------------------------
+        | Cek API Key
+        |--------------------------------------------------------------------------
+        */
+
         if (!$this->hasApiKey()) {
-            // Mock embedding deterministic 128 float values untuk pengujian lokal jika API key belum diisi
+            Log::warning(
+                'NvidiaService: API key tidak tersedia untuk embedding.'
+            );
+
             return $this->generateMockEmbedding($text);
         }
 
         try {
+            $url = "{$this->baseUrl}/embeddings";
+
+            Log::info(
+                'NvidiaService: Mengirim request embedding ke NVIDIA.',
+                [
+                    'model' => $this->embeddingModel,
+                ]
+            );
+
             $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Authorization' => 'Bearer ' . trim($this->apiKey),
                 'Content-Type' => 'application/json',
                 'Accept' => 'application/json',
-            ])->timeout(15)->post("{$this->baseUrl}/embeddings", [
-                'model' => $this->embeddingModel,
-                'input' => $text,
-                'encoding_format' => 'float',
-            ]);
+            ])
+                ->connectTimeout(10)
+                ->timeout(30)
+                ->post($url, [
+                    'model' => $this->embeddingModel,
+                    'input' => $text,
+                    'encoding_format' => 'float',
+                ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Embedding sukses
+            |--------------------------------------------------------------------------
+            */
 
             if ($response->successful()) {
                 $data = $response->json();
-                return $data['data'][0]['embedding'] ?? null;
+
+                return $data['data'][0]['embedding']
+                    ?? null;
             }
 
-            Log::warning("NvidiaService: Gagal generate embedding ({$response->status()}): " . $response->body());
+            /*
+            |--------------------------------------------------------------------------
+            | Embedding HTTP error
+            |--------------------------------------------------------------------------
+            */
+
+            Log::warning(
+                'NvidiaService: Gagal generate embedding.',
+                [
+                    'status' => $response->status(),
+                    'body' => mb_substr(
+                        $response->body(),
+                        0,
+                        1000
+                    ),
+                ]
+            );
+
             return $this->generateMockEmbedding($text);
-        } catch (\Exception $e) {
-            Log::error("NvidiaService: Exception saat generate embedding: " . $e->getMessage());
+
+        } catch (\Throwable $e) {
+
+            Log::error(
+                'NvidiaService: Exception saat generate embedding.',
+                [
+                    'message' => $e->getMessage(),
+                ]
+            );
+
             return $this->generateMockEmbedding($text);
         }
     }
 
     /**
-     * Fallback cerdas berbasis data mekanik & RAG lokal jika API Key belum dipasang.
+     * Membuat response fallback.
+     *
+     * Fallback sekarang membedakan:
+     *
+     * API_KEY_MISSING
+     * API_ERROR
+     * CONNECTION_ERROR
+     * EMPTY_RESPONSE
+     * EXCEPTION
      */
-    protected function generateFallbackResponse(array $messages): array
-    {
-        $systemPrompt = $messages[0]['content'] ?? '';
-        $lastUserMessage = '';
+    protected function generateFallbackResponse(
+        array $messages,
+        string $reason = 'UNKNOWN',
+        ?int $httpStatus = null
+    ): array {
+        $reasonText = match ($reason) {
 
-        foreach (array_reverse($messages) as $msg) {
-            if ($msg['role'] === 'user') {
-                $lastUserMessage = $msg['content'];
-                break;
-            }
-        }
+            'API_KEY_MISSING' =>
+                'API key NVIDIA belum dikonfigurasi.',
 
-        // Ekstraksi data karakter dari system prompt
-        $charName = 'Karakter';
-        if (preg_match('/\[FAKTA GAME DATA RESMI:\s*(.*?)\]/', $systemPrompt, $m)) {
-            $charName = trim($m[1]);
-        }
+            'API_ERROR' =>
+                'NVIDIA API mengembalikan error'
+                . (
+                    $httpStatus
+                        ? " (HTTP {$httpStatus})."
+                        : '.'
+                ),
 
-        $constellation = 'C0';
-        if (preg_match('/Konstelasi Aktif:\s*(C\d+)/', $systemPrompt, $m)) {
-            $constellation = trim($m[1]);
-        }
+            'CONNECTION_ERROR' =>
+                'Koneksi ke NVIDIA API gagal atau mengalami timeout.',
 
-        $contentMode = 'Spiral Abyss';
-        if (preg_match('/Mode:\s*(.*?)\n/', $systemPrompt, $m)) {
-            $contentMode = trim($m[1]);
-        }
+            'EMPTY_RESPONSE' =>
+                'NVIDIA API mengembalikan response kosong.',
 
-        // Ekstraksi panduan theorycraft RAG dari system prompt jika ada
-        $ragSection = '';
-        if (preg_match('/\[PANDUAN THEORYCRAFT TAMBAHAN \(RAG\)\](.*)/s', $systemPrompt, $m)) {
-            $ragSection = trim($m[1]);
-        }
+            'EXCEPTION' =>
+                'Terjadi error saat memanggil NVIDIA API.',
 
-        $resonancesSection = '';
-        if (preg_match('/Resonansi Elemen:\n(.*?)\n\n/s', $systemPrompt, $m)) {
-            $resonancesSection = trim($m[1]);
-        }
-
-        $reactionsSection = '';
-        if (preg_match('/Reaksi Elemen yang Terpicu dalam Tim:\n(.*?)\n\n/s', $systemPrompt, $m)) {
-            $reactionsSection = trim($m[1]);
-        }
-
-        $output = "### ✦ Analisis & Rekomendasi Build: {$charName} ({$constellation})\n\n";
-        $output .= "*Mode: {$contentMode} • Powered by Local Mechanics & RAG Engine*\n\n";
-
-        if (!empty($resonancesSection) && !str_contains($resonancesSection, 'Tidak ada')) {
-            $output .= "**Buff Resonansi Elemen Aktif:**\n{$resonancesSection}\n\n";
-        }
-
-        if (!empty($reactionsSection) && !str_contains($reactionsSection, 'Tidak ada')) {
-            $output .= "**Sinergi Reaksi Elemen:**\n{$reactionsSection}\n\n";
-        }
-
-        if (!empty($ragSection)) {
-            $output .= "**Panduan Build Terverifikasi (KQM / Theorycraft):**\n\n{$ragSection}\n\n";
-        } else {
-            $output .= "Berdasarkan evaluasi statistik dan peran karakter di tim:\n";
-            $output .= "- **Senjata Utama**: Gunakan senjata signature atau senjata dengan substat CRIT Rate / CRIT DMG / ER.\n";
-            $output .= "- **Artefak Rekomendasi**: Gunakan set 4-piece yang selaras dengan mekanisme skill.\n";
-            $output .= "- **Prioritas Main Stat**: Sands (ER / HP% / ATK%), Goblet (Elemental DMG%), Circlet (CRIT Rate / CRIT DMG).\n";
-            $output .= "- **Target Substat**: ER (hingga batas rotasi) > CRIT Rate : CRIT DMG (rasio 1:2).\n\n";
-        }
-
-        $output .= "---\n";
-        $output .= "> [!TIP]\n";
-        $output .= "> **Untuk Mengaktifkan NVIDIA Nemotron Cloud**:\n";
-        $output .= "> Masukkan API Key Anda di file `.env`:\n";
-        $output .= "> `NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxxxxxx`\n";
-        $output .= "> Dapatkan key gratis di: **[build.nvidia.com](https://build.nvidia.com/)**";
+            default =>
+                'NVIDIA API tidak dapat digunakan.',
+        };
 
         return [
-            'content' => $output,
-            'tokens_used' => 350,
-            'model' => 'NVIDIA Nemotron (Local Mechanics Engine)',
+            'content' => $this->buildFallbackContent(
+                $messages,
+                $reasonText
+            ),
+
+            'tokens_used' => null,
+
+            'model' => 'local-fallback',
+
             'status' => 'fallback',
+
+            'source' => 'local',
+
+            'fallback_reason' => $reason,
+
+            'http_status' => $httpStatus,
         ];
     }
 
     /**
-     * Menghasilkan vektor float deterministik (128 dimensi) untuk testing offline.
+     * Membuat response fallback lokal.
      */
-    protected function generateMockEmbedding(string $text): array
-    {
-        $hash = md5($text);
-        $vector = [];
-        for ($i = 0; $i < 64; $i++) {
-            $hex = substr($hash, ($i % 30), 2);
-            $val = (hexdec($hex) / 255.0) * 2 - 1; // rentang -1.0 s/d 1.0
-            $vector[] = round($val, 4);
+    protected function buildFallbackContent(
+        array $messages,
+        string $reason
+    ): string {
+        return "Sistem rekomendasi lokal digunakan.\n\n"
+            . "Status NVIDIA: {$reason}\n\n"
+            . "Rekomendasi tetap dibuat berdasarkan "
+            . "data karakter, senjata, artefak, mekanik, "
+            . "reaksi, dan aturan tim yang tersedia "
+            . "di sistem.";
+    }
+
+    /**
+     * Membuat mock embedding lokal.
+     *
+     * Digunakan jika NVIDIA embedding tidak tersedia.
+     */
+    protected function generateMockEmbedding(
+        string $text
+    ): array {
+        $dimension = 384;
+
+        $hash = hash('sha256', $text);
+
+        $embedding = [];
+
+        for ($i = 0; $i < $dimension; $i++) {
+
+            $index = ($i * 2) % strlen($hash);
+
+            $value = hexdec(
+                substr($hash, $index, 2)
+            );
+
+            $embedding[] = ($value / 127.5) - 1;
         }
-        return $vector;
+
+        return $embedding;
     }
 }
