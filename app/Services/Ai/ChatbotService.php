@@ -2,10 +2,13 @@
 
 namespace App\Services\Ai;
 
+use App\Models\BuildKnowledge;
+use App\Models\Character;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Nvidia\NvidiaService;
 use App\Services\QueryUnderstanding\EntityExtractor;
+use App\Services\QueryUnderstanding\IntentClassifier;
 use Illuminate\Support\Facades\Log;
 
 class ChatbotService
@@ -13,7 +16,8 @@ class ChatbotService
     public function __construct(
         protected RecommendationEngine $recommendationEngine,
         protected NvidiaService $nvidiaService,
-        protected EntityExtractor $entityExtractor
+        protected EntityExtractor $entityExtractor,
+        protected IntentClassifier $intentClassifier
     ) {}
 
     /**
@@ -36,17 +40,16 @@ class ChatbotService
 
                 'target_content' => 'abyss',
 
-                'patch_version' => '7.0',
+                'patch_version' => config('services.genshin.target_patch', '7.0'),
             ]
         );
 
-        /*
-         * Jika conversation sudah ada tetapi frontend
-         * mengirim character baru, update character aktif.
-         */
+        // Keep the character established by chat history; the frontend sends its
+        // current selector on every request, which may not match the discussion.
         if (
-            !empty($characterSlug)
+            ! empty($characterSlug)
             && $conversation->character_slug !== $characterSlug
+            && ! $conversation->messages()->exists()
         ) {
             $conversation->update([
                 'character_slug' => $characterSlug,
@@ -66,8 +69,7 @@ class ChatbotService
      * Tetap dipertahankan supaya endpoint /api/chat/send
      * yang lama tidak langsung rusak.
      *
-     * PERBEDAAN:
-     * Sekarang chat TIDAK memanggil generateBuild().
+     * Build intents use the recommendation pipeline; other intents use chat.
      */
     public function handleMessage(
         Conversation $conversation,
@@ -80,50 +82,129 @@ class ChatbotService
             'content' => $userMessageText,
         ]);
 
+        $intent = $this->resolveIntent($conversation, $userMessageText);
+        if ($intent === IntentClassifier::INTENT_GREETING) {
+            return $this->respondToGreeting($conversation, $userMessage, false);
+        }
+        if ($intent === IntentClassifier::INTENT_KNOWLEDGE_STATUS) {
+            return $this->respondWithLocalKnowledgeStatus($conversation, $userMessage, false);
+        }
+
         $context = $this->prepareChatContext(
             $conversation,
             $userMessageText
         );
 
+        if ($intent === IntentClassifier::INTENT_BUILD) {
+            $buildData = $this->recommendationEngine->generateBuild(
+                $context['target_character'],
+                $context['constellation'],
+                $context['team'],
+                $context['content_mode'],
+                $userMessageText
+            );
+
+            $replyContent = $buildData['ai_recommendation']
+                ?? $buildData['message']
+                ?? 'Rekomendasi build belum dapat disusun untuk permintaan ini.';
+            $localRecommendation = null;
+            if ($this->containsInternalReasoning($replyContent)) {
+                $localRecommendation = $this->recommendationEngine->buildLocalRecommendation(
+                    $context['target_character'],
+                    $context['content_mode']
+                );
+                $replyContent = $localRecommendation
+                    ?? $this->localGuideUnavailableMessage($context['target_character']);
+            }
+            $botMessage = Message::create([
+                'conversation_id' => $conversation->id,
+                'role' => 'assistant',
+                'content' => $replyContent,
+                'meta_payload' => [
+                    'intent' => $intent,
+                    'character' => $context['target_character'],
+                    'role' => $context['extracted']['role'] ?? null,
+                    'model' => $buildData['model'] ?? null,
+                    'source' => $buildData['source'] ?? null,
+                    'status' => $buildData['status'] ?? null,
+                    'recommendation_source' => $localRecommendation !== null
+                        ? 'local_knowledge'
+                        : ($buildData['recommendation_source'] ?? null),
+                    'chat_mode' => 'build',
+                    'streaming' => false,
+                ],
+                'tokens_used' => $buildData['tokens_used'] ?? null,
+            ]);
+
+            return [
+                'user_message' => $userMessage,
+                'bot_message' => $botMessage,
+                'build_data' => $buildData,
+            ];
+        }
+
         $aiResponse = $this->nvidiaService->chat(
             $context['messages'],
             0.2,
-            320
+            800
         );
 
         $replyContent =
             $aiResponse['content']
             ?? 'Maaf, saya tidak dapat memproses pertanyaan tersebut saat ini.';
 
+        $localKnowledgeReply = null;
+        if (($aiResponse['status'] ?? null) === 'fallback') {
+            $localKnowledgeReply = $this->localKnowledgeFallback(
+                $intent,
+                $context['target_character'],
+                $context['content_mode']
+            );
+            $replyContent = $localKnowledgeReply
+                ?? 'Maaf, layanan AI sedang tidak tersedia dan belum ada panduan lokal yang cocok. Silakan coba lagi nanti.';
+        } else {
+            if ($this->containsInternalReasoning($replyContent)) {
+                $localKnowledgeReply = $this->localKnowledgeFallback(
+                    $intent,
+                    $context['target_character'],
+                    $context['content_mode']
+                );
+                $replyContent = $localKnowledgeReply
+                    ?? 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
+            } else {
+                $replyContent = $this->filterInternalReasoning($replyContent);
+            }
+        }
+
         $metaPayload = [
             'character' => $context['target_character'],
 
-            'model' =>
-                $aiResponse['model']
+            'model' => $aiResponse['model']
                 ?? null,
 
-            'source' =>
-                $aiResponse['source']
+            'source' => $aiResponse['source']
                 ?? null,
 
-            'status' =>
-                $aiResponse['status']
+            'status' => $aiResponse['status']
                 ?? null,
 
-            'fallback_reason' =>
-                $aiResponse['fallback_reason']
+            'fallback_reason' => $aiResponse['fallback_reason']
                 ?? null,
+
+            'recommendation_source' => $localKnowledgeReply !== null
+                ? 'local_knowledge'
+                : ($aiResponse['source'] ?? null),
+
+            'intent' => $intent,
 
             'chat_mode' => 'lightweight',
 
             'streaming' => false,
 
-            'request_seconds' =>
-                $aiResponse['request_seconds']
+            'request_seconds' => $aiResponse['request_seconds']
                 ?? null,
 
-            'total_seconds' =>
-                $aiResponse['total_seconds']
+            'total_seconds' => $aiResponse['total_seconds']
                 ?? null,
         ];
 
@@ -132,8 +213,7 @@ class ChatbotService
             'role' => 'assistant',
             'content' => $replyContent,
             'meta_payload' => $metaPayload,
-            'tokens_used' =>
-                $aiResponse['tokens_used']
+            'tokens_used' => $aiResponse['tokens_used']
                 ?? null,
         ]);
 
@@ -163,8 +243,7 @@ class ChatbotService
     public function streamMessage(
         Conversation $conversation,
         string $userMessageText,
-        callable $onToken,
-        ?string $frontendCharacter = null
+        callable $onToken
     ): array {
 
         $startTime = microtime(true);
@@ -178,19 +257,13 @@ class ChatbotService
             'content' => $userMessageText,
         ]);
 
-        /*
-         * Kalau frontend mengirim karakter aktif,
-         * gunakan sebagai konteks percakapan.
-         */
-        if (
-            !empty($frontendCharacter)
-            && $conversation->character_slug !== $frontendCharacter
-        ) {
-            $conversation->update([
-                'character_slug' => $frontendCharacter,
-            ]);
+        $intent = $this->resolveIntent($conversation, $userMessageText);
 
-            $conversation->refresh();
+        if ($intent === IntentClassifier::INTENT_GREETING) {
+            return $this->respondToGreeting($conversation, $userMessage, true, $onToken);
+        }
+        if ($intent === IntentClassifier::INTENT_KNOWLEDGE_STATUS) {
+            return $this->respondWithLocalKnowledgeStatus($conversation, $userMessage, true, $onToken);
         }
 
         /*
@@ -200,6 +273,57 @@ class ChatbotService
             $conversation,
             $userMessageText
         );
+
+        if ($intent === IntentClassifier::INTENT_BUILD) {
+            $buildData = $this->recommendationEngine->generateBuild(
+                $context['target_character'],
+                $context['constellation'],
+                $context['team'],
+                $context['content_mode'],
+                $userMessageText
+            );
+            $replyContent = $buildData['ai_recommendation']
+                ?? $buildData['message']
+                ?? 'Rekomendasi build belum dapat disusun untuk permintaan ini.';
+            $localRecommendation = null;
+            if ($this->containsInternalReasoning($replyContent)) {
+                $localRecommendation = $this->recommendationEngine->buildLocalRecommendation(
+                    $context['target_character'],
+                    $context['content_mode']
+                );
+                $replyContent = $localRecommendation
+                    ?? $this->localGuideUnavailableMessage($context['target_character']);
+            }
+            $onToken($replyContent);
+            $botMessage = Message::create([
+                'conversation_id' => $conversation->id,
+                'role' => 'assistant',
+                'content' => $replyContent,
+                'meta_payload' => [
+                    'intent' => $intent,
+                    'character' => $context['target_character'],
+                    'role' => $context['extracted']['role'] ?? null,
+                    'model' => $buildData['model'] ?? null,
+                    'source' => $buildData['source'] ?? null,
+                    'status' => $buildData['status'] ?? null,
+                    'recommendation_source' => $localRecommendation !== null
+                        ? 'local_knowledge'
+                        : ($buildData['recommendation_source'] ?? null),
+                    'chat_mode' => 'build',
+                    'streaming' => true,
+                ],
+                'tokens_used' => $buildData['tokens_used'] ?? null,
+            ]);
+
+            return [
+                'user_message' => $userMessage,
+                'bot_message' => $botMessage,
+                'ai_response' => $buildData,
+                'build_data' => $buildData,
+                'target_character' => $context['target_character'],
+                'total_seconds' => round(microtime(true) - $startTime, 4),
+            ];
+        }
 
         Log::info(
             '[CHAT] ===== START STREAM =====',
@@ -214,103 +338,101 @@ class ChatbotService
             ]
         );
 
-        $fullReply = '';
+        $generatedReply = '';
 
         /*
-         * Panggil NVIDIA streaming.
+         * Kumpulkan output lebih dulu agar teks analisis internal tidak
+         * sempat terkirim ke browser sebelum bisa diperiksa.
          */
         $aiResponse = $this->nvidiaService->chatStream(
             $context['messages'],
-            function (string $token) use (
-                &$fullReply,
-                $onToken
-            ) {
-                /*
-                 * Simpan seluruh jawaban untuk database.
-                 */
-                $fullReply .= $token;
-
-                /*
-                 * Kirim token ke controller.
-                 */
-                $onToken($token);
+            function (string $token) use (&$generatedReply): void {
+                $generatedReply .= $token;
             },
             0.2,
-            320
+            800
         );
 
-        /*
-         * Dalam kondisi tertentu NVIDIA fallback dapat
-         * mengembalikan content tanpa melewati callback.
-         *
-         * Hindari mengirim dua kali.
-         */
+        // Fallback NVIDIA tertentu mengembalikan content tanpa callback.
         if (
-            empty($fullReply)
-            && !empty($aiResponse['content'])
+            empty($generatedReply)
+            && ! empty($aiResponse['content'])
         ) {
-            $fullReply =
+            $generatedReply =
                 $aiResponse['content'];
-
-            $onToken($fullReply);
         }
 
-        if (empty(trim($fullReply))) {
-            $fullReply =
+        if (empty(trim($generatedReply))) {
+            $generatedReply =
                 'Maaf, Ava belum mendapatkan jawaban dari layanan AI.';
         }
+
+        $localKnowledgeReply = null;
+        if (($aiResponse['status'] ?? null) === 'fallback') {
+            $localKnowledgeReply = $this->localKnowledgeFallback(
+                $intent,
+                $context['target_character'],
+                $context['content_mode']
+            );
+            $generatedReply = $localKnowledgeReply
+                ?? 'Maaf, layanan AI sedang tidak tersedia dan belum ada panduan lokal yang cocok. Silakan coba lagi nanti.';
+        } elseif ($this->containsInternalReasoning($generatedReply)) {
+            $localKnowledgeReply = $this->localKnowledgeFallback(
+                $intent,
+                $context['target_character'],
+                $context['content_mode']
+            );
+            $generatedReply = $localKnowledgeReply
+                ?? 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
+        }
+
+        $fullReply = $this->filterInternalReasoning($generatedReply);
+        $onToken($fullReply);
 
         /*
          * Metadata chat.
          */
         $metaPayload = [
-            'character' =>
-                $context['target_character'],
+            'character' => $context['target_character'],
 
-            'model' =>
-                $aiResponse['model']
+            'model' => $aiResponse['model']
                 ?? null,
 
-            'source' =>
-                $aiResponse['source']
+            'source' => $aiResponse['source']
                 ?? null,
 
-            'status' =>
-                $aiResponse['status']
+            'status' => $aiResponse['status']
                 ?? null,
 
-            'fallback_reason' =>
-                $aiResponse['fallback_reason']
+            'fallback_reason' => $aiResponse['fallback_reason']
                 ?? null,
 
-            'chat_mode' =>
-                'lightweight',
+            'recommendation_source' => $localKnowledgeReply !== null
+                ? 'local_knowledge'
+                : ($aiResponse['source'] ?? null),
 
-            'streaming' =>
-                true,
+            'intent' => $intent,
 
-            'finish_reason' =>
-                $aiResponse['finish_reason']
+            'chat_mode' => 'lightweight',
+
+            'streaming' => true,
+
+            'finish_reason' => $aiResponse['finish_reason']
                 ?? null,
 
-            'prompt_tokens' =>
-                $aiResponse['prompt_tokens']
+            'prompt_tokens' => $aiResponse['prompt_tokens']
                 ?? null,
 
-            'completion_tokens' =>
-                $aiResponse['completion_tokens']
+            'completion_tokens' => $aiResponse['completion_tokens']
                 ?? null,
 
-            'request_seconds' =>
-                $aiResponse['request_seconds']
+            'request_seconds' => $aiResponse['request_seconds']
                 ?? null,
 
-            'total_seconds' =>
-                $aiResponse['total_seconds']
+            'total_seconds' => $aiResponse['total_seconds']
                 ?? null,
 
-            'ttft_seconds' =>
-                $aiResponse['ttft_seconds']
+            'ttft_seconds' => $aiResponse['ttft_seconds']
                 ?? null,
         ];
 
@@ -326,8 +448,7 @@ class ChatbotService
 
             'meta_payload' => $metaPayload,
 
-            'tokens_used' =>
-                $aiResponse['tokens_used']
+            'tokens_used' => $aiResponse['tokens_used']
                 ?? null,
         ]);
 
@@ -358,15 +479,212 @@ class ChatbotService
 
             'build_data' => null,
 
-            'target_character' =>
-                $context['target_character'],
+            'target_character' => $context['target_character'],
 
-            'total_seconds' =>
-                round(
-                    $totalDuration,
-                    4
-                ),
+            'total_seconds' => round(
+                $totalDuration,
+                4
+            ),
         ];
+    }
+
+    /**
+     * Fail closed when a model returns internal analysis instead of an answer.
+     */
+    protected function containsInternalReasoning(string $content): bool
+    {
+        $reasoningPatterns = [
+            '/^\s*here(?:\'|’)s\s+(?:a\s+)?thinking process\b/iu',
+            '/^\s*(?:thinking process|internal reasoning)\s*:/iu',
+            '/^\s*(?:let me think|let me analyze|let\'s think step by step)\b/iu',
+            '/^\s*\d+[.)]\s*(?:\*\*)?(?:analyze user input|check system\/context constraints|determine response strategy)\b/iu',
+        ];
+
+        foreach ($reasoningPatterns as $pattern) {
+            if (preg_match($pattern, $content) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function filterInternalReasoning(string $content): string
+    {
+        if ($this->containsInternalReasoning($content)) {
+            Log::warning('[CHAT] Model returned internal reasoning; response suppressed.', [
+                'content_chars' => mb_strlen($content),
+            ]);
+
+            return 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
+        }
+
+        return $content;
+    }
+
+    protected function respondToGreeting(
+        Conversation $conversation,
+        Message $userMessage,
+        bool $streaming,
+        ?callable $onToken = null
+    ): array {
+        $reply = 'Hai! 👋 Ada yang bisa saya bantu? Saya bisa membantu build karakter, senjata, artefak, team composition, ER, rotasi, reaction, atau mekanik Genshin Impact.';
+        if ($onToken !== null) {
+            $onToken($reply);
+        }
+
+        $botMessage = Message::create([
+            'conversation_id' => $conversation->id,
+            'role' => 'assistant',
+            'content' => $reply,
+            'meta_payload' => [
+                'intent' => IntentClassifier::INTENT_GREETING,
+                'recommendation_source' => 'local',
+                'chat_mode' => 'greeting',
+                'streaming' => $streaming,
+            ],
+        ]);
+
+        return [
+            'user_message' => $userMessage,
+            'bot_message' => $botMessage,
+            'ai_response' => [
+                'content' => $reply,
+                'status' => 'success',
+                'source' => 'local',
+            ],
+            'build_data' => null,
+        ];
+    }
+
+    protected function respondWithLocalKnowledgeStatus(
+        Conversation $conversation,
+        Message $userMessage,
+        bool $streaming,
+        ?callable $onToken = null
+    ): array {
+        $patch = (string) config('services.genshin.target_patch', '7.0');
+        $characterNames = Character::query()
+            ->whereHas('buildKnowledge', function ($query) use ($patch) {
+                $query->where('patch_version', $patch)
+                    ->where('category', '!=', 'character_overview');
+            })
+            ->orderBy('name')
+            ->pluck('name')
+            ->unique()
+            ->values();
+
+        $reply = $characterNames->isEmpty()
+            ? "Belum ada panduan build lokal untuk patch {$patch}."
+            : "Panduan build lokal tersedia untuk patch {$patch}:\n"
+                .$characterNames->map(fn (string $name) => "- {$name}")->implode("\n");
+
+        if ($onToken !== null) {
+            $onToken($reply);
+        }
+
+        $botMessage = Message::create([
+            'conversation_id' => $conversation->id,
+            'role' => 'assistant',
+            'content' => $reply,
+            'meta_payload' => [
+                'intent' => IntentClassifier::INTENT_KNOWLEDGE_STATUS,
+                'recommendation_source' => 'local_knowledge',
+                'chat_mode' => 'knowledge_status',
+                'streaming' => $streaming,
+                'patch_version' => $patch,
+            ],
+        ]);
+
+        return [
+            'user_message' => $userMessage,
+            'bot_message' => $botMessage,
+            'ai_response' => [
+                'content' => $reply,
+                'status' => 'success',
+                'source' => 'local_knowledge',
+            ],
+            'build_data' => null,
+        ];
+    }
+
+    protected function resolveIntent(Conversation $conversation, string $message): string
+    {
+        $intent = $this->intentClassifier->classify($message);
+        if ($intent !== IntentClassifier::INTENT_GENERAL
+            || ! preg_match('/^(?:kalau|bagaimana dengan|gimana dengan|terus(?:\s+kalau|\s+untuk)?|untuk)\b/i', trim($message))) {
+            return $intent;
+        }
+
+        $previousAssistantMessage = $conversation->messages()
+            ->where('role', 'assistant')
+            ->latest('id')
+            ->first();
+
+        $previousMessageWasBuild = ($previousAssistantMessage?->meta_payload['intent'] ?? null)
+            === IntentClassifier::INTENT_BUILD
+            || preg_match('/^\s*#\s*Build\b/i', $previousAssistantMessage?->content ?? '') === 1;
+
+        if (! $previousMessageWasBuild) {
+            return $intent;
+        }
+
+        $entities = $this->entityExtractor->extract($message);
+
+        return $entities['target_character'] !== null
+            ? IntentClassifier::INTENT_BUILD
+            : $intent;
+    }
+
+    protected function localGuideUnavailableMessage(string $characterSlug): string
+    {
+        $character = Character::query()->where('slug', $characterSlug)->first();
+        $characterName = $character?->name ?? ucwords(str_replace('-', ' ', $characterSlug));
+
+        return "Layanan AI tidak memberikan jawaban build yang valid untuk {$characterName}, dan panduan build lokal karakter ini belum tersedia. Coba lagi saat layanan AI tersedia.";
+    }
+
+    protected function localKnowledgeFallback(
+        string $intent,
+        string $characterSlug,
+        string $contentMode
+    ): ?string {
+        $category = match ($intent) {
+            IntentClassifier::INTENT_WEAPON_QUESTION,
+            IntentClassifier::INTENT_WEAPON_COMPARE => 'weapons_ranking',
+            IntentClassifier::INTENT_ARTIFACT_QUESTION => 'artifact_priorities',
+            IntentClassifier::INTENT_TEAM_SYNERGY => 'team_synergies',
+            IntentClassifier::INTENT_ROTATION => 'rotation',
+            IntentClassifier::INTENT_MECHANICS => 'role_and_reactions',
+            default => null,
+        };
+
+        if ($category === null) {
+            return null;
+        }
+
+        $character = Character::query()->where('slug', $characterSlug)->first();
+        if ($character === null) {
+            return null;
+        }
+
+        $knowledge = BuildKnowledge::query()
+            ->where('character_id', $character->id)
+            ->where('patch_version', $character->patch_version)
+            ->where('category', $category)
+            ->where(function ($query) use ($contentMode) {
+                $query->where('target_content', $contentMode)
+                    ->orWhere('target_content', 'universal');
+            })
+            ->orderByRaw('CASE WHEN target_content = ? THEN 0 ELSE 1 END', [$contentMode])
+            ->orderByDesc('id')
+            ->first();
+
+        if ($knowledge === null) {
+            return null;
+        }
+
+        return "## {$knowledge->title}\n{$knowledge->content}";
     }
 
     /**
@@ -407,11 +725,11 @@ class ChatbotService
             ?? 'abyss';
 
         $team =
-            !empty($extracted['team'])
+            ! empty($extracted['team'])
                 ? $extracted['team']
                 : ($conversation->active_team ?? []);
 
-        if (!is_array($team)) {
+        if (! is_array($team)) {
             $team = [];
         }
 
@@ -419,14 +737,12 @@ class ChatbotService
          * Jika user secara eksplisit menyebut karakter,
          * jadikan karakter tersebut sebagai karakter aktif.
          */
-        if (!empty($extracted['target_character'])) {
+        if (! empty($extracted['target_character'])) {
 
             $conversation->update([
-                'character_slug' =>
-                    $extracted['target_character'],
+                'character_slug' => $extracted['target_character'],
 
-                'target_content' =>
-                    $contentMode,
+                'target_content' => $contentMode,
             ]);
 
             $conversation->refresh();
@@ -456,14 +772,21 @@ class ChatbotService
         $systemPrompt = <<<PROMPT
 Kamu adalah Ava, AI assistant untuk website Genshin Impact Build AI.
 
+ATURAN TERPENTING:
+- JANGAN pernah menampilkan proses berpikir, analisis internal, atau chain-of-thought.
+- JANGAN menulis "Here's a thinking process", "Let me analyze", "Step 1", "Step 2", dll.
+- JANGAN menjelaskan bagaimana kamu memproses pertanyaan.
+- Langsung berikan JAWABAN FINAL saja.
+
 Tugas:
 - Membantu user memahami build karakter Genshin Impact.
 - Menjawab pertanyaan tentang senjata, artefak, stat, ER, talent, constellation, team, reaction, rotation, dan mekanik karakter.
+- Jawab sesuai maksud pesan terbaru. Jangan membuat rekomendasi build hanya karena ada karakter aktif; buat build hanya jika user memintanya.
 - Jawab dalam Bahasa Indonesia kecuali user menggunakan bahasa lain.
 - Gunakan data dan konteks yang diberikan sistem.
 - Jangan mengarang angka atau mekanik jika tidak ada dalam konteks.
 - Jika informasi spesifik tidak tersedia, katakan bahwa informasi tersebut perlu diverifikasi.
-- Jawaban harus langsung ke inti.
+- Jawaban harus langsung ke inti, padat, dan to-the-point.
 - Gunakan Markdown sederhana agar mudah dibaca.
 - Gunakan heading pendek dan bullet list jika diperlukan.
 - Jangan mengulang pertanyaan user.
@@ -476,8 +799,8 @@ Mode konten: {$contentMode}
 Tim aktif:
 PROMPT;
 
-        if (!empty($team)) {
-            $systemPrompt .= "\n" . implode(
+        if (! empty($team)) {
+            $systemPrompt .= "\n".implode(
                 ', ',
                 array_map(
                     fn ($item) => (string) $item,
@@ -511,7 +834,7 @@ PROMPT;
                     $content,
                     0,
                     1800
-                ) . '...';
+                ).'...';
             }
 
             $role =

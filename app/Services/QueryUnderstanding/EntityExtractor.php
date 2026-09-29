@@ -12,9 +12,6 @@ class EntityExtractor
 
     /**
      * Mengekstrak seluruh entitas penting dari teks query bebas pengguna.
-     *
-     * @param string $query
-     * @return array
      */
     public function extract(string $query): array
     {
@@ -43,7 +40,7 @@ class EntityExtractor
 
         // Cek alias komunitas terlebih dahulu
         foreach ($knownAliases as $alias => $officialSlug) {
-            if (preg_match('/\b' . preg_quote($alias, '/') . '\b/i', $query)) {
+            if (preg_match('/\b'.preg_quote($alias, '/').'\b/i', $query)) {
                 $detectedCharacters[] = $officialSlug;
             }
         }
@@ -52,8 +49,8 @@ class EntityExtractor
         $allSlugs = Character::pluck('slug')->toArray();
         foreach ($allSlugs as $slug) {
             $slugClean = str_replace('-', ' ', $slug);
-            if (preg_match('/\b' . preg_quote($slug, '/') . '\b/i', $query) ||
-                preg_match('/\b' . preg_quote($slugClean, '/') . '\b/i', $query)) {
+            if (preg_match('/\b'.preg_quote($slug, '/').'\b/i', $query) ||
+                preg_match('/\b'.preg_quote($slugClean, '/').'\b/i', $query)) {
                 $detectedCharacters[] = $slug;
             }
         }
@@ -61,12 +58,30 @@ class EntityExtractor
         $detectedCharacters = array_values(array_unique($detectedCharacters));
 
         // Karakter pertama adalah target utama, sisanya adalah rekan tim
-        $targetCharacter = !empty($detectedCharacters) ? $detectedCharacters[0] : null;
+        $targetCharacter = ! empty($detectedCharacters) ? $detectedCharacters[0] : null;
         $team = array_slice($detectedCharacters, 1, 3);
+        $role = preg_match('/\b(main\s*dps|sub\s*dps|dps|support|healer|shielder|buffer)\b/i', $query, $roleMatch)
+            ? strtolower(preg_replace('/\s+/', ' ', $roleMatch[1]))
+            : null;
+        $topic = match (true) {
+            preg_match('/\b(artefak|artifact|artifacts)\b/i', $query) === 1
+                && preg_match('/\b(main\s*stat|sub\s*stat|substat|stats?|crit|er)\b/i', $query) === 1 => 'artifact_stats',
+            preg_match('/\b(artefak|artifact|artifacts)\b/i', $query) === 1 => 'artifact_set',
+            preg_match('/\b(senjata|weapon|weapons)\b/i', $query) === 1
+                && preg_match('/\b(stats?|passive|pasif|base\s*attack|substat)\b/i', $query) === 1 => 'weapon_stats',
+            preg_match('/\b(senjata|weapon|weapons)\b/i', $query) === 1 => 'weapon_recommendation',
+            preg_match('/\b(tim|team|sinergi|cocok)\b/i', $query) === 1 => 'team_synergy',
+            preg_match('/\b(rotasi|rotation|combo|kombo)\b/i', $query) === 1 => 'rotation',
+            preg_match('/\b(vaporize|vape|melt|overload|superconduct|electro-charged|swirl|crystallize|bloom|hyperbloom|burgeon|burning|shatter|reaction|reaksi)\b/i', $query) === 1 => 'reaction',
+            preg_match('/\b(mekanik|mechanic|kemampuan|ability|talent|skill|elemental\s+mastery)\b/i', $query) === 1 => 'mechanics',
+            default => null,
+        };
 
         return [
             'raw_query' => $query,
             'target_character' => $targetCharacter,
+            'role' => $role,
+            'topic' => $topic,
             'constellation' => $constellation,
             'team' => $team,
             'content_mode' => $contentMode,

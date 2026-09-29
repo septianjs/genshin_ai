@@ -24,6 +24,7 @@ Route::post('/build/recommend', [BuildController::class, 'recommend']);
 
 // Chatbot Interaktif
 Route::post('/chat/send', [ChatbotController::class, 'sendMessage']);
+Route::post('/chat/stream', [ChatbotController::class, 'streamMessage']);
 Route::get('/chat/history/{sessionToken}', [ChatbotController::class, 'getHistory']);
 
 // Query Understanding Tester

@@ -17,7 +17,7 @@ class CharacterController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $patch = $request->query('patch', '7.0');
+        $patch = $request->query('patch', config('services.genshin.target_patch', '7.0'));
         $characters = $this->genshinService->getAllCharacters($patch);
 
         return response()->json([
@@ -33,7 +33,7 @@ class CharacterController extends Controller
      */
     public function show(string $slug, Request $request): JsonResponse
     {
-        $patch = $request->query('patch', '7.0');
+        $patch = $request->query('patch', config('services.genshin.target_patch', '7.0'));
         $character = $this->genshinService->getCharacter($slug, $patch);
 
         if (!$character) {

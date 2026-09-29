@@ -20,6 +20,7 @@ class BuildKnowledge extends Model
         'target_content',
         'embedding',
         'patch_version',
+        'source',
     ];
 
     protected $casts = [

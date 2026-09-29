@@ -19,8 +19,10 @@ class GenshinApiService
      * Mengambil daftar karakter lokal dari database.
      * Jika database masih kosong, lakukan sinkronisasi otomatis untuk batch awal.
      */
-    public function getAllCharacters(string $patchVersion = '7.0'): Collection
+    public function getAllCharacters(?string $patchVersion = null): Collection
     {
+        $patchVersion ??= (string) config('services.genshin.target_patch', '7.0');
+
         $characters = Character::where('patch_version', $patchVersion)
             ->orderBy('rarity', 'desc')
             ->orderBy('name', 'asc')
@@ -32,8 +34,10 @@ class GenshinApiService
     /**
      * Mengambil detail satu karakter berdasarkan slug.
      */
-    public function getCharacter(string $slug, string $patchVersion = '7.0'): ?Character
+    public function getCharacter(string $slug, ?string $patchVersion = null): ?Character
     {
+        $patchVersion ??= (string) config('services.genshin.target_patch', '7.0');
+
         $character = Character::where('slug', $slug)
             ->where('patch_version', $patchVersion)
             ->first();
@@ -49,8 +53,10 @@ class GenshinApiService
     /**
      * Melakukan sinkronisasi satu karakter dari API pihak ketiga ke database lokal.
      */
-    public function syncCharacter(string $slug, string $patchVersion = '7.0'): ?Character
+    public function syncCharacter(string $slug, ?string $patchVersion = null): ?Character
     {
+        $patchVersion ??= (string) config('services.genshin.target_patch', '7.0');
+
         $rawData = $this->client->getCharacterDetails($slug);
 
         if (!$rawData) {
@@ -76,8 +82,10 @@ class GenshinApiService
      * @param int|null $limit Batasan jumlah karakter yang disinkronkan (opsional untuk testing)
      * @return array Ringkasan hasil sinkronisasi ['total' => int, 'success' => int, 'failed' => int]
      */
-    public function syncAllCharacters(?int $limit = null, string $patchVersion = '7.0'): array
+    public function syncAllCharacters(?int $limit = null, ?string $patchVersion = null): array
     {
+        $patchVersion ??= (string) config('services.genshin.target_patch', '7.0');
+
         $slugs = $this->client->getCharacterSlugs();
 
         if (empty($slugs)) {

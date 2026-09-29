@@ -96,8 +96,8 @@
         background: rgba(2, 6, 23, 0.62);
         border: 1px solid rgba(51, 65, 85, 0.8);
         border-radius: 16px;
-        padding: 18px;
-        margin-bottom: 14px;
+        padding: 22px;
+        margin-bottom: 18px;
     }
 
     .ai-section:last-child {
@@ -111,29 +111,16 @@
         color: #e5c158;
         font-weight: 800;
         font-family: 'Cinzel', serif;
-        font-size: 13px;
+        font-size: 15px;
         letter-spacing: 0.04em;
         text-transform: uppercase;
         margin-bottom: 12px;
     }
 
-    .ai-section-icon {
-        width: 30px;
-        height: 30px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 9px;
-        background: rgba(229,193,88,0.10);
-        border: 1px solid rgba(229,193,88,0.22);
-        font-size: 15px;
-        flex-shrink: 0;
-    }
-
     .ai-content {
         color: #cbd5e1;
-        font-size: 13px;
-        line-height: 1.75;
+        font-size: 15px;
+        line-height: 1.85;
     }
 
     .ai-content p {
@@ -170,6 +157,67 @@
         color: #f5d67b;
         padding: 2px 7px;
         border-radius: 6px;
+    }
+
+    .entity-asset-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+    }
+
+    .entity-asset-card {
+        min-width: 0;
+        padding: 12px;
+        border: 1px solid rgba(51, 65, 85, 0.8);
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.72);
+    }
+
+    .entity-asset-frame {
+        width: 100%;
+        aspect-ratio: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        border: 1px solid rgba(71, 85, 105, 0.65);
+        border-radius: 10px;
+        background: rgba(2, 6, 23, 0.7);
+    }
+
+    .entity-asset-image {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+    }
+
+    .entity-asset-character .entity-asset-image {
+        object-fit: cover;
+    }
+
+    .entity-asset-unavailable {
+        padding: 8px;
+        color: #94a3b8;
+        font-size: 11px;
+        line-height: 1.4;
+        text-align: center;
+    }
+
+    .entity-asset-name {
+        margin-top: 9px;
+        color: #f1f5f9;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+    }
+
+    .entity-asset-detail {
+        margin-top: 4px;
+        color: #94a3b8;
+        font-size: 10px;
+        line-height: 1.4;
     }
 
     .loading-orb {
@@ -224,6 +272,7 @@
     class="bg-teyvat-bg text-slate-100 min-h-screen flex flex-col font-sans"
     x-data="genshinApp()"
     x-init="initApp()"
+    data-genshin-api-base="{{ rtrim(config('services.genshin.third_party_url', 'https://genshin.jmp.blue'), '/') }}"
 >
 
 ```
@@ -246,7 +295,7 @@
             </h2>
 
             <p class="mt-2 text-sm text-slate-400">
-                Nemotron sedang menyusun rekomendasi untuk
+                Ava sedang menyusun rekomendasi untuk
                 <span
                     class="text-slate-200 font-semibold"
                     x-text="activeCharData?.name || selectedSlug"
@@ -325,7 +374,7 @@
 <!-- MAIN -->
 <!-- ========================================================= -->
 
-<main class="flex-1 max-w-7xl w-full mx-auto p-4 lg:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+<main class="flex-1 max-w-screen-2xl w-full mx-auto p-4 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-7">
 
 
     <!-- ===================================================== -->
@@ -368,6 +417,40 @@
                     <label class="block text-xs font-semibold text-slate-300 mb-1.5">
                         Karakter Utama
                     </label>
+
+                    <div class="flex items-center gap-3 mb-2.5 rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+                        <div class="relative w-14 h-14 rounded-lg bg-slate-900 border border-slate-700 overflow-hidden shrink-0">
+                            <template x-if="activeCharData?.icon_url">
+                                <img
+                                    :src="activeCharData.icon_url"
+                                    :alt="activeCharData.name"
+                                    class="w-full h-full object-cover"
+                                    loading="lazy"
+                                    decoding="async"
+                                    @load="$el.hidden = false; $el.parentElement.querySelector('[data-character-fallback]').classList.add('hidden')"
+                                    @@error="$el.hidden = true; $el.parentElement.querySelector('[data-character-fallback]').classList.remove('hidden')"
+                                >
+                            </template>
+                            <template x-if="!activeCharData?.icon_url">
+                                <div class="absolute inset-0 p-1 flex items-center justify-center text-center text-[9px] leading-tight text-slate-400">
+                                    Asset unavailable
+                                </div>
+                            </template>
+                            <div data-character-fallback class="hidden absolute inset-0 p-1 flex items-center justify-center text-center text-[9px] leading-tight text-slate-400">
+                                Asset unavailable
+                            </div>
+                        </div>
+                        <div class="min-w-0">
+                            <div class="font-semibold text-sm text-slate-100 truncate" x-text="activeCharData?.name || 'Pilih karakter'"></div>
+                            <div class="text-xs text-slate-400 mt-1">
+                                <span x-text="activeCharData?.vision || '-'"></span>
+                                <span> · </span>
+                                <span x-text="activeCharData?.weapon_type || '-'"></span>
+                                <span> · </span>
+                                <span x-text="activeCharData?.rarity ? activeCharData.rarity + '★' : '-'"></span>
+                            </div>
+                        </div>
+                    </div>
 
                     <select
                         x-model="selectedSlug"
@@ -492,7 +575,7 @@
                         Target
                     </div>
 
-                    <div class="w-16 h-16 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-sm text-slate-200 overflow-hidden mb-2">
+                    <div class="relative w-16 h-16 rounded-xl bg-slate-800 border border-slate-700 overflow-hidden mb-2">
 
                         <template x-if="activeCharData?.icon_url">
 
@@ -500,17 +583,17 @@
                                 :src="activeCharData.icon_url"
                                 class="w-full h-full object-cover"
                                 :alt="activeCharData?.name"
+                                loading="lazy"
+                                decoding="async"
+                                @load="$el.hidden = false; $el.parentElement.querySelector('[data-character-fallback]').classList.add('hidden')"
+                                @@error="$el.hidden = true; $el.parentElement.querySelector('[data-character-fallback]').classList.remove('hidden')"
                             >
 
                         </template>
 
-                        <template x-if="!activeCharData?.icon_url">
-
-                            <span
-                                x-text="activeCharData?.name?.substring(0, 2) || '?'"
-                            ></span>
-
-                        </template>
+                        <div data-character-fallback class="hidden absolute inset-0 p-1 flex items-center justify-center text-center text-[9px] leading-tight text-slate-400">
+                            Asset unavailable
+                        </div>
 
                     </div>
 
@@ -537,9 +620,37 @@
                             Slot <span x-text="index + 2"></span>
                         </span>
 
-                        <div class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-xs text-slate-500 mb-2">
-                            👤
+                        <div class="relative w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 overflow-hidden mb-2">
+                            <template x-if="characterBySlug(tmSlug)?.icon_url">
+                                <img
+                                    :src="characterBySlug(tmSlug).icon_url"
+                                    :alt="characterBySlug(tmSlug).name"
+                                    class="w-full h-full object-cover"
+                                    loading="lazy"
+                                    decoding="async"
+                                    @load="$el.hidden = false; $el.parentElement.querySelector('[data-character-fallback]').classList.add('hidden')"
+                                    @@error="$el.hidden = true; $el.parentElement.querySelector('[data-character-fallback]').classList.remove('hidden')"
+                                >
+                            </template>
+                            <div data-character-fallback class="hidden absolute inset-0 p-1 flex items-center justify-center text-center text-[8px] leading-tight text-slate-400">
+                                Asset unavailable
+                            </div>
+                            <template x-if="tmSlug && !characterBySlug(tmSlug)?.icon_url">
+                                <div class="absolute inset-0 p-1 flex items-center justify-center text-center text-[8px] leading-tight text-slate-400">
+                                    Asset unavailable
+                                </div>
+                            </template>
+                            <template x-if="!tmSlug">
+                                <div class="absolute inset-0 flex items-center justify-center text-[9px] text-slate-500">
+                                    Kosong
+                                </div>
+                            </template>
                         </div>
+
+                        <span
+                            class="w-full text-[10px] font-semibold text-slate-200 truncate mb-1"
+                            x-text="characterBySlug(tmSlug)?.name || 'Slot kosong'"
+                        ></span>
 
                         <select
                             x-model="teamSlugs[index]"
@@ -729,17 +840,18 @@
                                 :src="buildResult.character.icon_url"
                                 :alt="buildResult.character.name"
                                 class="w-full h-full object-cover"
+                                loading="lazy"
+                                decoding="async"
+                                @load="$el.hidden = false; $el.parentElement.querySelector('[data-character-fallback]').classList.add('hidden')"
+                                @@error="$el.hidden = true; $el.parentElement.querySelector('[data-character-fallback]').classList.remove('hidden')"
                             >
 
                         </template>
 
-                        <template x-if="!buildResult?.character?.icon_url">
-
-                            <div class="w-full h-full flex items-center justify-center text-2xl">
-                                ✦
-                            </div>
-
-                        </template>
+                        <div data-character-fallback x-show="!buildResult?.character?.icon_url" class="absolute inset-0 p-2 flex items-center justify-center text-center text-xs text-slate-400">
+                            Asset unavailable<br>
+                            <span x-text="buildResult?.character?.name"></span>
+                        </div>
 
                     </div>
 
@@ -872,6 +984,43 @@
 
             <!-- AI REPORT -->
 
+            <div class="px-5 sm:px-6 pt-5">
+                <section class="rounded-2xl bg-slate-950/55 border border-slate-800 p-4 sm:p-5">
+                    <h4 class="text-sm sm:text-base font-bold font-cinzel text-teyvat-gold mb-4">
+                        Anggota Tim Rekomendasi
+                    </h4>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <template x-for="member in buildTeamMembers()" :key="member.slug">
+                            <div class="rounded-xl bg-slate-900/80 border border-slate-800 p-2.5 text-center min-w-0">
+                                <div class="relative mx-auto w-full max-w-24 aspect-square rounded-lg overflow-hidden bg-slate-950 border border-slate-700">
+                                    <template x-if="member.icon_url">
+                                        <img
+                                            :src="member.icon_url"
+                                            :alt="member.name"
+                                            class="w-full h-full object-cover"
+                                            loading="lazy"
+                                            decoding="async"
+                                            @load="$el.hidden = false; $el.parentElement.querySelector('[data-team-fallback]').classList.add('hidden')"
+                                            @@error="$el.hidden = true; $el.parentElement.querySelector('[data-team-fallback]').classList.remove('hidden')"
+                                        >
+                                    </template>
+                                    <div data-team-fallback class="hidden absolute inset-0 p-1 flex items-center justify-center text-center text-[9px] leading-tight text-slate-400">
+                                        Asset unavailable
+                                    </div>
+                                    <template x-if="!member.icon_url">
+                                        <div class="absolute inset-0 p-1 flex items-center justify-center text-center text-[9px] leading-tight text-slate-400">
+                                            Asset unavailable
+                                        </div>
+                                    </template>
+                                </div>
+                                <div class="mt-2 text-xs font-semibold text-slate-100 truncate" x-text="member.name"></div>
+                                <div class="mt-1 text-[10px] text-slate-400" x-text="member.vision || ''"></div>
+                            </div>
+                        </template>
+                    </div>
+                </section>
+            </div>
+
             <div class="p-5 sm:p-6">
 
                 <div class="flex items-center justify-between mb-4">
@@ -882,7 +1031,7 @@
                             AI Analysis
                         </div>
 
-                        <h4 class="text-lg font-bold font-cinzel text-slate-100">
+                        <h4 class="text-xl sm:text-2xl font-bold font-cinzel text-slate-100">
                             Build Recommendation
                         </h4>
 
@@ -946,7 +1095,7 @@
     <!-- RIGHT CHAT -->
     <!-- ===================================================== -->
 
-    <div class="lg:col-span-5 flex flex-col h-[750px] genshin-glass rounded-2xl shadow-2xl overflow-hidden">
+    <div class="lg:col-span-5 flex flex-col h-[850px] genshin-glass rounded-2xl shadow-2xl overflow-hidden">
 
 
         <!-- Chat Header -->
@@ -955,8 +1104,8 @@
 
             <div class="flex items-center space-x-2.5">
 
-                <div class="w-9 h-9 rounded-full bg-gradient-to-tr from-teyvat-gold to-amber-600 flex items-center justify-center text-slate-950 font-bold text-xs shadow-md">
-                    AI
+                <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-teyvat-gold to-amber-600 flex items-center justify-center text-slate-950 text-xl shadow-md">
+                    ✨
                 </div>
 
                 <div>
@@ -1022,7 +1171,7 @@
         <!-- Chat Messages -->
 
         <div
-            class="flex-1 p-4 overflow-y-auto space-y-4 custom-scroll"
+            class="flex-1 p-5 sm:p-6 overflow-y-auto space-y-5 custom-scroll"
             id="chatContainer"
         >
 
@@ -1034,16 +1183,21 @@
                         : 'flex justify-start'"
                 >
 
-                    <div
-                        :class="msg.role === 'user'
-                            ? 'bg-teyvat-gold text-slate-950 font-medium ml-12'
-                            : 'bg-slate-900 border border-slate-800 text-slate-200 mr-12'"
-                        class="rounded-2xl px-4 py-3 text-xs sm:text-sm shadow-md leading-relaxed whitespace-pre-wrap"
-                    >
+                    <template x-if="msg.role === 'assistant'">
+                        <div class="flex items-start gap-3 w-full">
+                            <div class="w-9 h-9 mt-1 rounded-xl bg-teyvat-gold/10 border border-teyvat-gold/30 flex items-center justify-center text-lg shrink-0" aria-hidden="true">
+                                🧠
+                            </div>
+                            <div
+                                class="min-w-0 flex-1 text-slate-200"
+                                x-html="formatAIRecommendation(msg.content)"
+                            ></div>
+                        </div>
+                    </template>
 
-                        <span x-text="msg.content"></span>
-
-                    </div>
+                    <template x-if="msg.role === 'user'">
+                        <div class="bg-teyvat-gold text-slate-950 font-medium ml-12 rounded-2xl px-5 py-4 text-sm sm:text-base shadow-md leading-relaxed whitespace-pre-wrap" x-text="msg.content"></div>
+                    </template>
 
                 </div>
 
@@ -1052,11 +1206,11 @@
 
             <!-- Chat Loading -->
 
-            <template x-if="loadingChat">
+            <template x-if="loadingChat && !chatStreamStarted">
 
                 <div class="flex justify-start">
 
-                    <div class="bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3 text-xs text-slate-400">
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl px-5 py-4 text-sm text-slate-400">
 
                         <div class="flex items-center space-x-2">
 
@@ -1067,13 +1221,13 @@
                             <div class="w-1.5 h-1.5 rounded-full bg-teyvat-gold animate-bounce [animation-delay:0.4s]"></div>
 
                             <span class="ml-2 font-mono text-[11px]">
-                                Nemotron sedang menyusun strategi...
+                                Sedang menyiapkan jawaban...
                             </span>
 
                         </div>
 
                         <div class="mt-2 text-[9px] text-slate-600">
-                            AI dapat membutuhkan beberapa detik.
+                            Mohon tunggu sebentar.
                         </div>
 
                     </div>
@@ -1098,13 +1252,13 @@
                     type="text"
                     x-model="chatInput"
                     placeholder="Tanya build, senjata, artefak, ER, rotasi..."
-                    class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-teyvat-gold transition"
+                    class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm sm:text-base text-slate-100 placeholder-slate-500 focus:outline-none focus:border-teyvat-gold transition"
                 >
 
                 <button
                     type="submit"
                     :disabled="loadingChat || !chatInput.trim()"
-                    class="px-4 py-2.5 rounded-xl bg-teyvat-gold hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold font-cinzel text-xs sm:text-sm transition"
+                    class="px-5 py-3 rounded-xl bg-teyvat-gold hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold font-cinzel text-sm sm:text-base transition"
                 >
                     Kirim
                 </button>
@@ -1147,6 +1301,12 @@
 
             characters: [],
 
+            weaponCatalog: [],
+
+            artifactCatalog: [],
+
+            genshinApiBase: '',
+
             selectedSlug: 'furina',
 
             constellation: 0,
@@ -1170,6 +1330,8 @@
             loadingBuild: false,
 
             loadingChat: false,
+
+            chatStreamStarted: false,
 
             chatInput: '',
 
@@ -1195,6 +1357,9 @@
 
             async initApp() {
 
+                this.genshinApiBase =
+                    this.$el.dataset.genshinApiBase || '';
+
                 this.sessionToken =
                     localStorage.getItem('genshin_session')
                     ||
@@ -1210,10 +1375,160 @@
                     this.sessionToken
                 );
 
+                this.loadEntityCatalogs();
                 await this.loadCharacters();
 
                 await this.onCharacterChange();
 
+            },
+
+            async loadEntityCatalogs() {
+
+                const loadCatalog = async (entity, property) => {
+                    const url = `${this.genshinApiBase}/${entity}/all`;
+
+                    try {
+                        const response = await fetch(url, {
+                            headers: { 'Accept': 'application/json' }
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+
+                        const data = await response.json();
+                        if (!Array.isArray(data)) {
+                            throw new Error('API returned an invalid entity catalog.');
+                        }
+
+                        this[property] = data.filter(item =>
+                            item
+                            && typeof item.id === 'string'
+                            && typeof item.name === 'string'
+                        );
+                    } catch (error) {
+                        console.error(`Gagal mengambil katalog ${entity}:`, error);
+                    }
+                };
+
+                await Promise.all([
+                    loadCatalog('weapons', 'weaponCatalog'),
+                    loadCatalog('artifacts', 'artifactCatalog')
+                ]);
+            },
+
+            characterBySlug(slug) {
+                return this.characters.find(character => character.slug === slug) || null;
+            },
+
+            buildTeamMembers() {
+                if (!this.buildResult?.character) {
+                    return [];
+                }
+
+                return [
+                    this.buildResult.character,
+                    ...(this.buildResult.teammates || [])
+                ];
+            },
+
+            escapeHtml(value) {
+                return String(value ?? '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            },
+
+            normalizeEntityName(value) {
+                return String(value ?? '')
+                    .toLowerCase()
+                    .replace(/&(?:amp|lt|gt|quot|#0*39);/g, ' ')
+                    .replace(/[^a-z0-9]+/g, ' ')
+                    .trim();
+            },
+
+            findMentionedEntities(entities, content) {
+                const normalizedContent = ` ${this.normalizeEntityName(content)} `;
+
+                return entities.filter(entity => {
+                    const searchKeys = [entity.name, entity.slug]
+                        .filter(Boolean)
+                        .map(value => this.normalizeEntityName(value));
+
+                    return searchKeys.some(normalizedName =>
+                        normalizedName
+                        && normalizedContent.includes(` ${normalizedName} `)
+                    );
+                });
+            },
+
+            entityAssetUrl(type, entity) {
+                if (!this.genshinApiBase || !entity?.id) {
+                    return '';
+                }
+
+                const id = encodeURIComponent(entity.id);
+                const assetPath = type === 'weapon'
+                    ? `weapons/${id}/icon`
+                    : `artifacts/${id}/flower-of-life`;
+
+                return `${this.genshinApiBase}/${assetPath}`;
+            },
+
+            renderEntityAssetCard(entity, type) {
+                const name = this.escapeHtml(entity.name);
+                const imageUrl = type === 'character'
+                    ? entity.icon_url
+                    : this.entityAssetUrl(type, entity);
+                const rarity = type === 'character'
+                    ? entity.rarity
+                    : (type === 'weapon' ? entity.rarity : entity.max_rarity);
+                const subtitle = type === 'weapon'
+                    ? [entity.type || 'Weapon', entity.subStat, rarity ? `${rarity}★` : '']
+                        .filter(Boolean)
+                        .join(' · ')
+                    : type === 'artifact'
+                        ? `Artifact Set${rarity ? ` · ${rarity}★` : ''}`
+                        : `${entity.vision || ''}${entity.weapon_type ? ` · ${entity.weapon_type}` : ''}`;
+                const image = imageUrl
+                    ? `<img src="${this.escapeHtml(imageUrl)}" alt="${name}" loading="lazy" decoding="async" class="entity-asset-image" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><div class="entity-asset-unavailable" hidden>Asset unavailable</div>`
+                    : '<div class="entity-asset-unavailable">Asset unavailable</div>';
+
+                return `
+                    <div class="entity-asset-card">
+                        <div class="entity-asset-frame entity-asset-${type}">${image}</div>
+                        <div class="entity-asset-name">${name}</div>
+                        <div class="entity-asset-detail">${this.escapeHtml(subtitle)}</div>
+                    </div>
+                `;
+            },
+
+            renderSectionEntityAssets(section) {
+                const content = `${section.title}\n${section.content.join('\n')}`;
+                const title = this.normalizeEntityName(section.title);
+                let entities = [];
+                let type = '';
+
+                if (title.includes('weapon') || title.includes('senjata')) {
+                    entities = this.findMentionedEntities(this.weaponCatalog, content);
+                    type = 'weapon';
+                } else if (title.includes('artifact') || title.includes('artefak')) {
+                    entities = this.findMentionedEntities(this.artifactCatalog, content);
+                    type = 'artifact';
+                } else if (title.includes('team') || title.includes('tim')) {
+                    entities = this.findMentionedEntities(this.characters, content);
+                    type = 'character';
+                }
+
+                if (!entities.length) {
+                    return '';
+                }
+
+                return `<div class="entity-asset-grid">${entities
+                    .map(entity => this.renderEntityAssetCard(entity, type))
+                    .join('')}</div>`;
             },
 
 
@@ -1533,19 +1848,7 @@
             formatAIRecommendation(text) {
 
                 if (!text) {
-
-                    return `
-                        <div class="ai-section">
-                            <div class="ai-section-title">
-                                <div class="ai-section-icon">⚠️</div>
-                                AI Response
-                            </div>
-
-                            <div class="ai-content">
-                                Belum ada rekomendasi dari AI.
-                            </div>
-                        </div>
-                    `;
+                    return '';
 
                 }
 
@@ -1594,97 +1897,8 @@
 
                 let current = {
                     title: 'AI Analysis',
-                    icon: '🧠',
                     content: []
                 };
-
-
-                const iconForTitle = (title) => {
-
-                    const t =
-                        title.toLowerCase();
-
-                    if (
-                        t.includes('weapon') ||
-                        t.includes('senjata')
-                    ) {
-                        return '⚔️';
-                    }
-
-                    if (
-                        t.includes('artifact') ||
-                        t.includes('artefak')
-                    ) {
-                        return '🏺';
-                    }
-
-                    if (
-                        t.includes('talent') ||
-                        t.includes('talenta')
-                    ) {
-                        return '📖';
-                    }
-
-                    if (
-                        t.includes('team') ||
-                        t.includes('tim')
-                    ) {
-                        return '👥';
-                    }
-
-                    if (
-                        t.includes('rotation') ||
-                        t.includes('rotasi')
-                    ) {
-                        return '🔄';
-                    }
-
-                    if (
-                        t.includes('stat') ||
-                        t.includes('substat')
-                    ) {
-                        return '📊';
-                    }
-
-                    if (
-                        t.includes('reaction') ||
-                        t.includes('reaksi')
-                    ) {
-                        return '⚡';
-                    }
-
-                    if (
-                        t.includes('constellation') ||
-                        t.includes('konstelasi')
-                    ) {
-                        return '✨';
-                    }
-
-                    if (
-                        t.includes('priority') ||
-                        t.includes('prioritas')
-                    ) {
-                        return '🎯';
-                    }
-
-                    if (
-                        t.includes('recommend') ||
-                        t.includes('rekomendasi')
-                    ) {
-                        return '💡';
-                    }
-
-                    if (
-                        t.includes('note') ||
-                        t.includes('catatan')
-                    ) {
-                        return '📝';
-                    }
-
-                    return '🧠';
-
-                };
-
 
                 const flushSection = () => {
 
@@ -1744,11 +1958,6 @@
                             title:
                                 title ||
                                 'AI Analysis',
-
-                            icon:
-                                iconForTitle(
-                                    title
-                                ),
 
                             content: []
 
@@ -1913,20 +2122,14 @@
                             <section class="ai-section">
 
                                 <div class="ai-section-title">
-
-                                    <div class="ai-section-icon">
-                                        ${section.icon}
-                                    </div>
-
-                                    <span>
-                                        ${section.title}
-                                    </span>
-
+                                    <span>${section.title}</span>
                                 </div>
 
                                 <div class="ai-content">
                                     ${html}
                                 </div>
+
+                                ${this.renderSectionEntityAssets(section)}
 
                             </section>
 
@@ -1984,14 +2187,28 @@
 
                 this.loadingChat = true;
 
+                this.chatStreamStarted = false;
+
+                this.chatMessages.push({
+
+                    role: 'assistant',
+
+                    content: ''
+
+                });
+
+                const assistantMessage =
+                    this.chatMessages[this.chatMessages.length - 1];
+
                 this.scrollChat();
 
+                let activeChatReader = null;
 
                 try {
 
                     const res =
                         await fetch(
-                            '/api/chat/send',
+                            '/api/chat/stream',
                             {
                                 method: 'POST',
 
@@ -2001,7 +2218,7 @@
                                         'application/json',
 
                                     'Accept':
-                                        'application/json'
+                                        'application/json, text/event-stream'
 
                                 },
 
@@ -2047,58 +2264,103 @@
 
                     }
 
-
-                    const json =
-                        await res.json();
-
-
-                    console.log(
-                        '[CHAT] Response:',
-                        json
-                    );
-
-
-                    if (
-                        json.success &&
-                        json.message
-                    ) {
-
-                        this.chatMessages.push({
-
-                            role:
-                                'assistant',
-
-                            content:
-                                json.message.content
-                                ||
-                                'AI tidak mengembalikan teks.'
-
-                        });
-
-
-                        /*
-                         * Build data dari chatbot.
-                         */
-
-                        if (
-                            json.build_data
-                        ) {
-
-                            this.buildResult =
-                                json.build_data;
-
-                        }
-
-                    } else {
-
+                    if (!res.body) {
                         throw new Error(
-                            json.message
-                            ||
-                            'AI tidak memberikan response.'
+                            'Browser tidak menyediakan response stream.'
                         );
-
                     }
 
+                    const reader = res.body.getReader();
+                    activeChatReader = reader;
+                    const decoder = new TextDecoder();
+                    const eventSeparator = /\r\n\r\n|\n\n|\r\r/;
+                    let buffer = '';
+                    let streamFinished = false;
+
+                    const processEvent = eventText => {
+                        const dataLines = eventText
+                            .split(/\r\n|\n|\r/)
+                            .filter(line => line.startsWith('data:'))
+                            .map(line => line.slice(5).replace(/^\s+/, ''));
+
+                        if (dataLines.length === 0) {
+                            return false;
+                        }
+
+                        const dataText = dataLines.join('\n');
+
+                        if (dataText === '[DONE]') {
+                            return true;
+                        }
+
+                        const event = JSON.parse(dataText);
+
+                        if (event.type === 'error') {
+                            throw new Error(
+                                event.message || 'Chat stream gagal.'
+                            );
+                        }
+
+                        if (event.type === 'build_result' && event.data) {
+                            this.buildResult = event.data;
+                        }
+
+                        if (
+                            event.type === 'chunk' &&
+                            typeof event.content === 'string'
+                        ) {
+                            assistantMessage.content += event.content;
+                            this.chatStreamStarted = true;
+                            this.scrollChat();
+                        }
+
+                        return false;
+                    };
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+
+                        if (done) {
+                            break;
+                        }
+
+                        buffer += decoder.decode(value, { stream: true });
+                        let separatorMatch;
+
+                        while ((separatorMatch = eventSeparator.exec(buffer)) !== null) {
+                            const separatorPosition = separatorMatch.index;
+                            const separatorLength = separatorMatch[0].length;
+                            const eventText = buffer.slice(0, separatorPosition);
+                            buffer = buffer.slice(separatorPosition + separatorLength);
+
+                            if (processEvent(eventText)) {
+                                streamFinished = true;
+                                await reader.cancel();
+                                break;
+                            }
+                        }
+
+                        if (streamFinished) {
+                            break;
+                        }
+                    }
+
+                    buffer += decoder.decode();
+
+                    if (!streamFinished && buffer.trim() !== '') {
+                        streamFinished = processEvent(buffer);
+                    }
+
+                    if (!streamFinished) {
+                        throw new Error(
+                            'Chat stream berakhir sebelum event DONE diterima.'
+                        );
+                    }
+
+                    if (assistantMessage.content.trim() === '') {
+                        assistantMessage.content =
+                            'AI tidak mengembalikan teks.';
+                    }
 
                 } catch (e) {
 
@@ -2107,17 +2369,25 @@
                         e
                     );
 
+                    if (activeChatReader) {
+                        try {
+                            await activeChatReader.cancel();
+                        } catch (cancelError) {
+                            console.debug(
+                                '[CHAT] Reader cancellation failed:',
+                                cancelError
+                            );
+                        }
+                    }
 
-                    this.chatMessages.push({
 
-                        role:
-                            'assistant',
+                    const errorMessage =
+                        '⚠️ Terjadi kendala saat menghubungi AI. ' +
+                        e.message;
 
-                        content:
-                            '⚠️ Terjadi kendala saat menghubungi AI.\n\n' +
-                            e.message
-
-                    });
+                    assistantMessage.content = assistantMessage.content
+                        ? assistantMessage.content + '\n\n' + errorMessage
+                        : errorMessage;
 
                 } finally {
 

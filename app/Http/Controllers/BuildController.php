@@ -8,6 +8,7 @@ use App\Services\Mechanics\ElementalReactionService;
 use App\Services\Mechanics\ElementalResonanceService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class BuildController extends Controller
 {
@@ -74,24 +75,43 @@ class BuildController extends Controller
         $contentMode = $request->input('content_mode', 'abyss');
         $customQuery = $request->input('custom_query');
 
-        $result = $this->recommendationEngine->generateBuild(
-            $characterSlug,
-            $constellation,
-            $team,
-            $contentMode,
-            $customQuery
-        );
+        set_time_limit(120);
 
-        if (!empty($result['error'])) {
+        try {
+            $result = $this->recommendationEngine->generateBuild(
+                $characterSlug,
+                $constellation,
+                $team,
+                $contentMode,
+                $customQuery
+            );
+
+            if (!empty($result['error'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $result['message'],
+                ], 404);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('[BUILD] Request failed', [
+                'character' => $characterSlug,
+                'constellation' => $constellation,
+                'team' => $team,
+                'content_mode' => $contentMode,
+                'exception' => get_class($e),
+                'message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
-                'message' => $result['message'],
-            ], 404);
+                'error_code' => 'BUILD_REQUEST_FAILED',
+                'message' => 'Rekomendasi build tidak dapat diproses saat ini. Silakan coba lagi.',
+            ], 502);
         }
-
-        return response()->json([
-            'success' => true,
-            'data' => $result,
-        ]);
     }
 }

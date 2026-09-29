@@ -14,7 +14,7 @@ class SyncGenshinData extends Command
      */
     protected $signature = 'genshin:sync 
                             {--limit= : Batasi jumlah karakter yang disinkronkan}
-                            {--patch=7.0 : Target patch version}';
+                            {--patch= : Target patch version}';
 
     /**
      * The console command description.
@@ -29,7 +29,7 @@ class SyncGenshinData extends Command
     public function handle(GenshinApiService $apiService): int
     {
         $limit = $this->option('limit') ? (int) $this->option('limit') : null;
-        $patch = (string) ($this->option('patch') ?? '7.0');
+        $patch = (string) ($this->option('patch') ?: config('services.genshin.target_patch', '7.0'));
 
         $this->info("Memulai sinkronisasi dataset karakter Genshin (Patch {$patch})...");
 

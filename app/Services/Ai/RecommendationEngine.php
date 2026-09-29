@@ -3,6 +3,7 @@
 namespace App\Services\Ai;
 
 use App\Models\Character;
+use App\Models\BuildKnowledge;
 use App\Services\Genshin\GenshinApiService;
 use App\Services\Mechanics\ConstellationImpactService;
 use App\Services\Mechanics\ContentModeService;
@@ -41,6 +42,13 @@ class RecommendationEngine
         ?string $customQuery = null
     ): array {
         $totalStart = microtime(true);
+        Log::info('[AI PERF] Request started', [
+            'character' => $characterSlug,
+            'constellation' => $constellation,
+            'teammates' => $teammateSlugs,
+            'content_mode' => $contentMode,
+            'has_custom_query' => $customQuery !== null,
+        ]);
 
         Log::info('[BUILD] ===== START generateBuild =====', [
             'character' => $characterSlug,
@@ -165,6 +173,14 @@ class RecommendationEngine
             'reactions' => $reactions,
             'constellation' => $constellationImpact,
             'content_profile' => $contentProfile,
+            'team' => array_map(
+                fn (Character $teammate) => [
+                    'name' => $teammate->name,
+                    'vision' => $teammate->vision,
+                    'weapon_type' => $teammate->weapon_type,
+                ],
+                $teammates
+            ),
         ];
 
         /*
@@ -172,7 +188,17 @@ class RecommendationEngine
         | 4. RAG / Vector Search
         |--------------------------------------------------------------------------
         */
-        $ragQuery = "Build guide {$character->name} C{$constellation} {$contentMode}";
+        $teamContext = implode(', ', array_map(
+            fn (Character $teammate) => "{$teammate->name} {$teammate->vision}",
+            $teammates
+        ));
+        $ragQuery = trim(implode(' ', array_filter([
+            "Build guide {$character->name} {$character->vision} {$character->weapon_type}",
+            "C{$constellation}",
+            $contentMode,
+            $teamContext !== '' ? "team {$teamContext}" : '',
+            $customQuery ?? '',
+        ])));
 
         Log::info('[RAG] Starting similarity search', [
             'query' => $ragQuery,
@@ -185,14 +211,22 @@ class RecommendationEngine
             $character,
             $ragQuery,
             $contentMode,
-            3
+            3,
+            array_map(
+                fn (Character $teammate) => $teammate->id,
+                $teammates
+            )
+        );
+        $buildKnowledgeAvailable = collect($ragChunks)->contains(
+            fn (BuildKnowledge $chunk) => $chunk->category !== 'character_overview'
         );
 
         $ragDuration = microtime(true) - $start;
 
-        Log::info('[RAG] searchSimilar completed', [
+        Log::info('[AI PERF] RAG completed', [
             'duration_seconds' => round($ragDuration, 4),
             'chunks_count' => is_array($ragChunks) ? count($ragChunks) : null,
+            'query_chars' => strlen($ragQuery),
         ]);
 
         /*
@@ -210,10 +244,11 @@ class RecommendationEngine
 
         $promptDuration = microtime(true) - $start;
 
-        Log::info('[PROMPT] System prompt built', [
+        Log::info('[AI PERF] Prompt built', [
             'duration_seconds' => round($promptDuration, 4),
             'system_prompt_chars' => strlen($systemPrompt),
             'system_prompt_tokens_estimate' => (int) ceil(strlen($systemPrompt) / 4),
+            'rag_chunks_used' => is_array($ragChunks) ? count($ragChunks) : 0,
         ]);
 
         /*
@@ -258,17 +293,38 @@ class RecommendationEngine
 
         $start = microtime(true);
 
-        $aiResponse = $this->nvidiaService->chat($messages);
+        Log::info('[AI PERF] NVIDIA request started', [
+            'prompt_chars' => strlen($systemPrompt) + strlen($userPrompt),
+            'messages_count' => count($messages),
+            'max_tokens' => 800,
+        ]);
+
+        $aiResponse = $this->nvidiaService->chat($messages, 0.2, 800);
+        $localRecommendation = null;
+
+        if (($aiResponse['status'] ?? null) === 'fallback') {
+            $localRecommendation = $this->buildLocalRecommendation(
+                $character->slug,
+                $contentMode
+            );
+
+            if ($localRecommendation !== null) {
+                $aiResponse['content'] = $localRecommendation;
+            } else {
+                $aiResponse['content'] = "Koneksi AI tidak tersedia dan panduan lokal untuk {$character->name} belum tersedia.";
+            }
+        }
 
         $nvidiaDuration = microtime(true) - $start;
 
-        Log::info('[NVIDIA] Chat request completed', [
+        Log::info('[AI PERF] NVIDIA request completed', [
             'duration_seconds' => round($nvidiaDuration, 4),
             'status' => $aiResponse['status'] ?? null,
             'model' => $aiResponse['model'] ?? null,
             'source' => $aiResponse['source'] ?? null,
             'tokens_used' => $aiResponse['tokens_used'] ?? null,
             'has_content' => !empty($aiResponse['content']),
+            'response_chars' => strlen((string) ($aiResponse['content'] ?? '')),
         ]);
 
         /*
@@ -277,6 +333,20 @@ class RecommendationEngine
         |--------------------------------------------------------------------------
         */
         $totalDuration = microtime(true) - $totalStart;
+
+        Log::info('[AI PERF] Response parsing completed', [
+            'duration_seconds' => 0.0,
+            'response_chars' => strlen((string) ($aiResponse['content'] ?? '')),
+        ]);
+
+        Log::info('[AI PERF] Request completed', [
+            'total_duration_seconds' => round($totalDuration, 4),
+            'character' => $character->name,
+            'rag_duration_seconds' => round($ragDuration, 4),
+            'prompt_duration_seconds' => round($promptDuration, 4),
+            'nvidia_duration_seconds' => round($nvidiaDuration, 4),
+            'response_chars' => strlen((string) ($aiResponse['content'] ?? '')),
+        ]);
 
         Log::info('[BUILD] ===== END generateBuild =====', [
             'total_duration_seconds' => round($totalDuration, 4),
@@ -336,6 +406,18 @@ class RecommendationEngine
 
             'fallback_reason' => $aiResponse['fallback_reason'] ?? null,
 
+            'recommendation_source' => $localRecommendation !== null
+                ? 'local_knowledge'
+                : ($aiResponse['source'] ?? null),
+
+            'knowledge_available' => $buildKnowledgeAvailable,
+
+            'knowledge_categories' => collect($ragChunks)
+                ->pluck('category')
+                ->unique()
+                ->values()
+                ->all(),
+
             /*
              * Informasi profiling internal.
              * Bisa digunakan untuk debugging/performance monitoring.
@@ -347,6 +429,68 @@ class RecommendationEngine
                 'nvidia_seconds' => round($nvidiaDuration, 4),
             ],
         ];
+    }
+
+    /**
+     * Renders a build from stored character knowledge without calling an AI API.
+     */
+    public function buildLocalRecommendation(
+        string $characterSlug,
+        string $contentMode = 'abyss'
+    ): ?string {
+        $character = Character::query()
+            ->where('slug', $characterSlug)
+            ->orderByDesc('patch_version')
+            ->first();
+
+        if (!$character) {
+            return null;
+        }
+
+        $knowledge = BuildKnowledge::query()
+            ->where('character_id', $character->id)
+            ->where('patch_version', $character->patch_version)
+            ->where('category', '!=', 'character_overview')
+            ->where(function ($query) use ($contentMode) {
+                $query->where('target_content', $contentMode)
+                    ->orWhere('target_content', 'universal');
+            })
+            ->get();
+
+        if ($knowledge->isEmpty()) {
+            return null;
+        }
+
+        $categoryOrder = [
+            'role_and_reactions' => 0,
+            'weapons_ranking' => 1,
+            'artifact_priorities' => 2,
+            'er_breakpoints' => 3,
+            'team_synergies' => 4,
+            'rotation' => 5,
+        ];
+        $knowledge = $knowledge->sortBy(
+            fn (BuildKnowledge $chunk) => $categoryOrder[$chunk->category] ?? 99
+        );
+
+        $recommendation = "# Build {$character->name}\n\n";
+        $recommendation .= "Rekomendasi lokal untuk mode {$contentMode} (data patch {$character->patch_version}).\n\n";
+
+        foreach ($knowledge as $chunk) {
+            $heading = match ($chunk->category) {
+                'role_and_reactions' => 'Peran dan Reaksi',
+                'weapons_ranking' => 'Senjata',
+                'artifact_priorities' => 'Artefak dan Stat',
+                'er_breakpoints' => 'Energy Recharge',
+                'team_synergies' => 'Rekomendasi Tim',
+                'rotation' => 'Rotasi',
+                default => ucfirst(str_replace('_', ' ', $chunk->category)),
+            };
+
+            $recommendation .= "## {$heading}\n{$chunk->content}\n\n";
+        }
+
+        return trim($recommendation);
     }
 
     /**

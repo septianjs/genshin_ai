@@ -21,6 +21,30 @@ Laravel is a web application framework with expressive, elegant syntax. We belie
 
 Laravel is accessible, powerful, and provides tools required for large, robust applications.
 
+## Local build recommendations
+
+The application stores character entity data and build theorycraft separately. Import the character catalog from a local JSON file first; this does not require moving the dataset into the Laravel project:
+
+```powershell
+php artisan genshin:import-characters "C:\path\to\genshin_ai_project\data\raw\characters.json" --dry-run
+php artisan genshin:import-characters "C:\path\to\genshin_ai_project\data\raw\characters.json"
+```
+
+The importer validates each record, inserts new character IDs, and skips IDs already in the database by default. Use `--update-existing` only when you intend to refresh existing entity records. Set `GENSHIN_TARGET_PATCH` or pass `--patch=...` to assign the intended patch version. The importer does not import weapon or artifact catalogs because the current database schema has no weapon or artifact tables; their current UI catalog remains sourced from the configured Genshin API.
+
+Then seed the curated theorycraft guides for supported characters and inspect coverage:
+
+```powershell
+php artisan db:seed --class="Database\Seeders\TheorycraftSeeder"
+php artisan genshin:knowledge-status
+```
+
+The seeder only adds guide data for characters already present in the database. It includes local Diluc and Arlecchino recommendations, which the chatbot and build endpoint can use when the NVIDIA API is unavailable. Run the seeder again after adding or changing guide entries. The coverage command reports characters without build knowledge; having character entity data alone does not imply that a build guide exists.
+
+## Genshin entity artwork
+
+The UI reuses each character's stored `icon_url` and loads weapon/artifact catalog IDs from the configured Genshin data API. Weapon and artifact artwork URLs are resolved from those returned IDs; if an image fails to load, the UI shows an `Asset unavailable` placeholder with the entity name instead of substituting unrelated artwork.
+
 ## Learning Laravel
 
 Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.

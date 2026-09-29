@@ -40,6 +40,10 @@ return [
         'base_url' => env('NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1'),
         'model' => env('NVIDIA_MODEL', 'nvidia/nemotron-3.5-lightning-30b-a3b'),
         'embedding_model' => env('NVIDIA_EMBEDDING_MODEL', 'nvidia/nemotron-3-embed-1b'),
+        'timeout' => (int) env('NVIDIA_TIMEOUT', 30),
+        'connect_timeout' => (int) env('NVIDIA_CONNECT_TIMEOUT', 10),
+        'stream_timeout' => (int) env('NVIDIA_STREAM_TIMEOUT', 45),
+        'embedding_timeout' => (int) env('NVIDIA_EMBEDDING_TIMEOUT', 5),
     ],
 
     'genshin' => [
