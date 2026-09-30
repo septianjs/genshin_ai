@@ -32,7 +32,9 @@ class RecommendationEngine
     ) {}
 
     /**
-     * Menghasilkan rekomendasi build lengkap berdasarkan parameter terstruktur.
+     * Generate build lengkap.
+     *
+     * Method ini adalah satu-satunya pipeline utama untuk Generate Build.
      */
     public function generateBuild(
         string $characterSlug,
@@ -42,555 +44,787 @@ class RecommendationEngine
         ?string $customQuery = null,
         bool $useLocalKnowledge = true
     ): array {
-        $totalStart = microtime(true);
-        Log::info('[AI PERF] Request started', [
-            'character' => $characterSlug,
-            'constellation' => $constellation,
-            'teammates' => $teammateSlugs,
-            'content_mode' => $contentMode,
-            'has_custom_query' => $customQuery !== null,
-        ]);
+        $totalStart =
+            microtime(true);
 
-        Log::info('[BUILD] ===== START generateBuild =====', [
-            'character' => $characterSlug,
-            'constellation' => $constellation,
-            'teammates' => $teammateSlugs,
-            'content_mode' => $contentMode,
-            'has_custom_query' => $customQuery !== null,
-        ]);
+        $characterSlug =
+            strtolower(
+                trim($characterSlug)
+            );
+
+        Log::info(
+            '[BUILD] ===== START generateBuild =====',
+            [
+                'character' =>
+                    $characterSlug,
+
+                'constellation' =>
+                    $constellation,
+
+                'teammates' =>
+                    $teammateSlugs,
+
+                'content_mode' =>
+                    $contentMode,
+            ]
+        );
 
         /*
-        |--------------------------------------------------------------------------
-        | 1. Ambil karakter utama
-        |--------------------------------------------------------------------------
-        */
-        $start = microtime(true);
+         * ========================================================
+         * 1. CHARACTER
+         * ========================================================
+         */
+        $start =
+            microtime(true);
 
-        $character = $this->genshinService->getCharacter($characterSlug);
+        $character =
+            $this->genshinService
+                ->getCharacter(
+                    $characterSlug
+                );
 
-        $duration = microtime(true) - $start;
+        Log::info(
+            '[BUILD] getCharacter',
+            [
+                'duration_seconds' =>
+                    round(
+                        microtime(true)
+                        - $start,
+                        4
+                    ),
 
-        Log::info('[BUILD] getCharacter', [
-            'duration_seconds' => round($duration, 4),
-            'found' => $character !== null,
-            'character' => $character?->name,
-        ]);
+                'found' =>
+                    $character !== null,
 
-        if (!$character) {
-            Log::warning('[BUILD] Character not found', [
-                'character_slug' => $characterSlug,
-            ]);
+                'character' =>
+                    $character?->name,
+            ]
+        );
 
+        if (
+            $character === null
+        ) {
             return [
-                'error' => true,
-                'message' => "Karakter '{$characterSlug}' tidak ditemukan dalam database lokal.",
+                'error' =>
+                    true,
+
+                'message' =>
+                    "Karakter '{$characterSlug}' tidak ditemukan dalam database lokal.",
             ];
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | 2. Kumpulkan rekan tim dan elemen
-        |--------------------------------------------------------------------------
-        */
-        $start = microtime(true);
-
+         * ========================================================
+         * 2. TEAM
+         * ========================================================
+         */
         $teammates = [];
-        $allVisions = [$character->vision];
+        $allVisions = [
+            $character->vision,
+        ];
 
-        foreach ($teammateSlugs as $tSlug) {
-            $tSlug = trim($tSlug);
+        foreach (
+            $teammateSlugs
+            as $teammateSlug
+        ) {
+            $teammateSlug =
+                strtolower(
+                    trim(
+                        (string)
+                        $teammateSlug
+                    )
+                );
 
-            if ($tSlug && $tSlug !== $characterSlug) {
-                $tm = $this->genshinService->getCharacter($tSlug);
+            if (
+                $teammateSlug === ''
+                ||
+                $teammateSlug ===
+                    $character->slug
+            ) {
+                continue;
+            }
 
-                if ($tm) {
-                    $teammates[] = $tm;
-                    $allVisions[] = $tm->vision;
-                }
+            $teammate =
+                $this->genshinService
+                    ->getCharacter(
+                        $teammateSlug
+                    );
+
+            if (
+                $teammate !== null
+            ) {
+                $teammates[] =
+                    $teammate;
+
+                $allVisions[] =
+                    $teammate->vision;
             }
         }
 
-        $duration = microtime(true) - $start;
-
-        Log::info('[BUILD] teammates', [
-            'duration_seconds' => round($duration, 4),
-            'requested_count' => count($teammateSlugs),
-            'found_count' => count($teammates),
-            'visions' => $allVisions,
-        ]);
-
         /*
-        |--------------------------------------------------------------------------
-        | 3. Evaluasi mekanik
-        |--------------------------------------------------------------------------
-        */
-        $mechanicsStart = microtime(true);
+         * ========================================================
+         * 3. MECHANICS
+         * ========================================================
+         */
+        $resonances =
+            $this->resonanceService
+                ->evaluateResonances(
+                    $allVisions
+                );
 
-        // Resonance
-        $start = microtime(true);
+        $reactions =
+            $this->reactionService
+                ->evaluateReactions(
+                    $allVisions
+                );
 
-        $resonances = $this->resonanceService->evaluateResonances($allVisions);
+        $constellationImpact =
+            $this->constellationService
+                ->analyzeImpact(
+                    $character,
+                    $constellation
+                );
 
-        Log::info('[BUILD] resonance evaluation', [
-            'duration_seconds' => round(microtime(true) - $start, 4),
-        ]);
-
-        // Reactions
-        $start = microtime(true);
-
-        $reactions = $this->reactionService->evaluateReactions($allVisions);
-
-        Log::info('[BUILD] reaction evaluation', [
-            'duration_seconds' => round(microtime(true) - $start, 4),
-        ]);
-
-        // Constellation
-        $start = microtime(true);
-
-        $constellationImpact = $this->constellationService->analyzeImpact(
-            $character,
-            $constellation
-        );
-
-        Log::info('[BUILD] constellation evaluation', [
-            'duration_seconds' => round(microtime(true) - $start, 4),
-        ]);
-
-        // Content mode
-        $start = microtime(true);
-
-        $contentProfile = $this->contentModeService->getProfile($contentMode);
-
-        Log::info('[BUILD] content profile', [
-            'duration_seconds' => round(microtime(true) - $start, 4),
-        ]);
-
-        Log::info('[BUILD] mechanics TOTAL', [
-            'duration_seconds' => round(microtime(true) - $mechanicsStart, 4),
-        ]);
-
-        $mechanicsData = [
-            'resonances' => $resonances,
-            'reactions' => $reactions,
-            'constellation' => $constellationImpact,
-            'content_profile' => $contentProfile,
-            'team' => array_map(
-                fn (Character $teammate) => [
-                    'name' => $teammate->name,
-                    'vision' => $teammate->vision,
-                    'weapon_type' => $teammate->weapon_type,
-                ],
-                $teammates
-            ),
-        ];
-
-        /*
-        |--------------------------------------------------------------------------
-        | 4. RAG / Vector Search
-        |--------------------------------------------------------------------------
-        */
-        $teamContext = implode(', ', array_map(
-            fn (Character $teammate) => "{$teammate->name} {$teammate->vision}",
-            $teammates
-        ));
-        $ragQuery = trim(implode(' ', array_filter([
-            "Build guide {$character->name} {$character->vision} {$character->weapon_type}",
-            "C{$constellation}",
-            $contentMode,
-            $teamContext !== '' ? "team {$teamContext}" : '',
-            $customQuery ?? '',
-        ])));
-
-        Log::info('[RAG] Starting similarity search', [
-            'query' => $ragQuery,
-            'top_k' => 3,
-        ]);
-
-        $start = microtime(true);
-
-        $ragChunks = $this->vectorStoreService->searchSimilar(
-            $character,
-            $ragQuery,
-            $contentMode,
-            3,
-            array_map(
-                fn (Character $teammate) => $teammate->id,
-                $teammates
-            )
-        );
-        $buildKnowledgeAvailable = collect($ragChunks)->contains(
-            fn (BuildKnowledge $chunk) => $chunk->category !== 'character_overview'
-        );
-
-        $ragDuration = microtime(true) - $start;
-
-        Log::info('[AI PERF] RAG completed', [
-            'duration_seconds' => round($ragDuration, 4),
-            'chunks_count' => is_array($ragChunks) ? count($ragChunks) : null,
-            'query_chars' => strlen($ragQuery),
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | 5. Susun System Prompt
-        |--------------------------------------------------------------------------
-        */
-        $start = microtime(true);
-
-        $systemPrompt = $this->contextBuilder->buildSystemPrompt(
-            $character,
-            $mechanicsData,
-            $ragChunks
-        );
-
-        $promptDuration = microtime(true) - $start;
-
-        Log::info('[AI PERF] Prompt built', [
-            'duration_seconds' => round($promptDuration, 4),
-            'system_prompt_chars' => strlen($systemPrompt),
-            'system_prompt_tokens_estimate' => (int) ceil(strlen($systemPrompt) / 4),
-            'rag_chunks_used' => is_array($ragChunks) ? count($ragChunks) : 0,
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | 6. Susun User Prompt
-        |--------------------------------------------------------------------------
-        */
-        $start = microtime(true);
-
-        $userPrompt = $customQuery
-            ?? "Tolong berikan rekomendasi build lengkap untuk {$character->name} C{$constellation} dalam tim dengan mode {$contentProfile['name']}.";
-
-        $messages = [
-            [
-                'role' => 'system',
-                'content' => $systemPrompt,
-            ],
-            [
-                'role' => 'user',
-                'content' => $userPrompt,
-            ],
-        ];
-
-        $messageDuration = microtime(true) - $start;
-
-        Log::info('[PROMPT] Messages prepared', [
-            'duration_seconds' => round($messageDuration, 4),
-            'user_prompt_chars' => strlen($userPrompt),
-            'total_message_chars' => strlen($systemPrompt) + strlen($userPrompt),
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | 7. Panggil NVIDIA Nemotron
-        |--------------------------------------------------------------------------
-        */
-        Log::info('[NVIDIA] Starting chat request', [
-            'character' => $character->name,
-            'model_expected' => config('services.nvidia.model'),
-            'message_count' => count($messages),
-        ]);
-
-        $start = microtime(true);
-
-        Log::info('[AI PERF] NVIDIA request started', [
-            'prompt_chars' => strlen($systemPrompt) + strlen($userPrompt),
-            'messages_count' => count($messages),
-            'max_tokens' => 800,
-        ]);
-
-        $aiResponse = $this->nvidiaService->chat($messages, 0.2, 800);
-        $localRecommendation = null;
-
-        if (($aiResponse['status'] ?? null) === 'fallback') {
-            if ($useLocalKnowledge) {
-                $localRecommendation = $this->buildLocalRecommendation(
-                    $character->slug,
+        $contentProfile =
+            $this->contentModeService
+                ->getProfile(
                     $contentMode
                 );
 
-                if ($localRecommendation !== null) {
-                    $aiResponse['content'] = $localRecommendation;
+        $mechanicsData = [
+            'resonances' =>
+                $resonances,
+
+            'reactions' =>
+                $reactions,
+
+            'constellation' =>
+                $constellationImpact,
+
+            'content_profile' =>
+                $contentProfile,
+
+            'team' =>
+                array_map(
+                    fn (
+                        Character $teammate
+                    ) => [
+                        'name' =>
+                            $teammate->name,
+
+                        'vision' =>
+                            $teammate->vision,
+
+                        'weapon_type' =>
+                            $teammate->weapon_type,
+                    ],
+                    $teammates
+                ),
+        ];
+
+        /*
+         * ========================================================
+         * 4. RAG
+         * ========================================================
+         *
+         * RAG adalah grounding tambahan.
+         *
+         * Tidak adanya knowledge lokal TIDAK membuat build gagal.
+         */
+        $teamContext =
+            implode(
+                ', ',
+                array_map(
+                    fn (
+                        Character $teammate
+                    ) =>
+                        "{$teammate->name} {$teammate->vision}",
+                    $teammates
+                )
+            );
+
+        $ragQuery =
+            trim(
+                implode(
+                    ' ',
+                    array_filter([
+                        "Build guide {$character->name}",
+                        $character->vision,
+                        $character->weapon_type,
+                        "C{$constellation}",
+                        $contentMode,
+
+                        $teamContext !== ''
+                            ? "team {$teamContext}"
+                            : '',
+
+                        $customQuery ?? '',
+                    ])
+                )
+            );
+
+        $ragStart =
+            microtime(true);
+
+        $ragChunks =
+            $this->vectorStoreService
+                ->searchSimilar(
+                    $character,
+                    $ragQuery,
+                    $contentMode,
+                    3,
+                    array_map(
+                        fn (
+                            Character $teammate
+                        ) =>
+                            $teammate->id,
+                        $teammates
+                    )
+                );
+
+        $ragDuration =
+            microtime(true)
+            - $ragStart;
+
+        $buildKnowledgeAvailable =
+            collect(
+                $ragChunks
+            )->contains(
+                fn (
+                    BuildKnowledge $chunk
+                ) =>
+                    $chunk->category
+                    !== 'character_overview'
+            );
+
+        /*
+         * ========================================================
+         * 5. SYSTEM PROMPT
+         * ========================================================
+         */
+        $promptStart =
+            microtime(true);
+
+        $systemPrompt =
+            $this->contextBuilder
+                ->buildSystemPrompt(
+                    $character,
+                    $mechanicsData,
+                    $ragChunks
+                );
+
+        $promptDuration =
+            microtime(true)
+            - $promptStart;
+
+        /*
+         * ========================================================
+         * 6. USER PROMPT
+         * ========================================================
+         */
+        $userPrompt =
+            $customQuery
+            ??
+            "Tolong berikan rekomendasi build lengkap untuk {$character->name} C{$constellation} dalam mode {$contentProfile['name']}.";
+
+        $messages = [
+            [
+                'role' =>
+                    'system',
+
+                'content' =>
+                    $systemPrompt,
+            ],
+
+            [
+                'role' =>
+                    'user',
+
+                'content' =>
+                    $userPrompt,
+            ],
+        ];
+
+        /*
+         * ========================================================
+         * 7. NVIDIA
+         * ========================================================
+         */
+        $nvidiaStart =
+            microtime(true);
+
+        $aiResponse =
+            $this->nvidiaService
+                ->chat(
+                    $messages,
+                    0.2,
+                    1000
+                );
+
+        $nvidiaDuration =
+            microtime(true)
+            - $nvidiaStart;
+
+        $localRecommendation =
+            null;
+
+        /*
+         * NVIDIA fallback hanya mencoba knowledge lokal.
+         *
+         * Tetapi jika tidak tersedia, jangan berpura-pura
+         * bahwa AI berhasil.
+         */
+        if (
+            ($aiResponse['status'] ?? null)
+            === 'fallback'
+        ) {
+            if (
+                $useLocalKnowledge
+            ) {
+                $localRecommendation =
+                    $this->buildLocalRecommendation(
+                        $character->slug,
+                        $contentMode
+                    );
+
+                if (
+                    $localRecommendation !== null
+                ) {
+                    $aiResponse['content'] =
+                        $localRecommendation;
+
+                    $aiResponse['source'] =
+                        'local';
+
+                    $aiResponse['fallback_reason'] =
+                        $aiResponse['fallback_reason']
+                        ?? 'LOCAL_KNOWLEDGE_FALLBACK';
                 } else {
-                    $aiResponse['content'] = "Koneksi AI tidak tersedia dan panduan lokal untuk {$character->name} belum tersedia.";
+                    /*
+                     * Tidak boleh menghasilkan build palsu.
+                     */
+                    $aiResponse['content'] =
+                        "Layanan AI NVIDIA sedang tidak tersedia. "
+                        ."Data build lokal khusus {$character->name} "
+                        ."juga belum tersedia.";
                 }
-            } else {
-                $aiResponse['content'] = "Layanan AI saat ini tidak tersedia. Silakan coba lagi nanti atau aktifkan penggunaan panduan lokal jika Anda ingin mengandalkan data lokal.";
             }
         }
 
-        $nvidiaDuration = microtime(true) - $start;
-
-        Log::info('[AI PERF] NVIDIA request completed', [
-            'duration_seconds' => round($nvidiaDuration, 4),
-            'status' => $aiResponse['status'] ?? null,
-            'model' => $aiResponse['model'] ?? null,
-            'source' => $aiResponse['source'] ?? null,
-            'tokens_used' => $aiResponse['tokens_used'] ?? null,
-            'has_content' => !empty($aiResponse['content']),
-            'response_chars' => strlen((string) ($aiResponse['content'] ?? '')),
-        ]);
+        $totalDuration =
+            microtime(true)
+            - $totalStart;
 
         /*
-        |--------------------------------------------------------------------------
-        | 8. Total waktu
-        |--------------------------------------------------------------------------
-        */
-        $totalDuration = microtime(true) - $totalStart;
-
-        Log::info('[AI PERF] Response parsing completed', [
-            'duration_seconds' => 0.0,
-            'response_chars' => strlen((string) ($aiResponse['content'] ?? '')),
-        ]);
-
-        Log::info('[AI PERF] Request completed', [
-            'total_duration_seconds' => round($totalDuration, 4),
-            'character' => $character->name,
-            'rag_duration_seconds' => round($ragDuration, 4),
-            'prompt_duration_seconds' => round($promptDuration, 4),
-            'nvidia_duration_seconds' => round($nvidiaDuration, 4),
-            'response_chars' => strlen((string) ($aiResponse['content'] ?? '')),
-        ]);
-
-        Log::info('[BUILD] ===== END generateBuild =====', [
-            'total_duration_seconds' => round($totalDuration, 4),
-            'character' => $character->name,
-            'rag_duration_seconds' => round($ragDuration, 4),
-            'prompt_duration_seconds' => round($promptDuration, 4),
-            'nvidia_duration_seconds' => round($nvidiaDuration, 4),
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | 9. Return hasil
-        |--------------------------------------------------------------------------
-        */
+         * ========================================================
+         * 8. RESULT
+         * ========================================================
+         */
         return [
             'character' => [
-                'slug' => $character->slug,
-                'name' => $character->name,
-                'vision' => $character->vision,
-                'weapon_type' => $character->weapon_type,
-                'rarity' => $character->rarity,
-                'icon_url' => $character->icon_url,
-                'constellation' => $constellation,
+                'slug' =>
+                    $character->slug,
+
+                'name' =>
+                    $character->name,
+
+                'vision' =>
+                    $character->vision,
+
+                'weapon_type' =>
+                    $character->weapon_type,
+
+                'rarity' =>
+                    $character->rarity,
+
+                'icon_url' =>
+                    $character->icon_url,
+
+                'constellation' =>
+                    $constellation,
             ],
 
-            'teammates' => array_map(
-                fn($t) => [
-                    'slug' => $t->slug,
-                    'name' => $t->name,
-                    'vision' => $t->vision,
-                    'icon_url' => $t->icon_url,
-                ],
-                $teammates
-            ),
+            'teammates' =>
+                array_map(
+                    fn (
+                        Character $teammate
+                    ) => [
+                        'slug' =>
+                            $teammate->slug,
+
+                        'name' =>
+                            $teammate->name,
+
+                        'vision' =>
+                            $teammate->vision,
+
+                        'icon_url' =>
+                            $teammate->icon_url,
+                    ],
+                    $teammates
+                ),
 
             'mechanics' => [
-                'active_resonances' => $resonances['summary_buffs'],
-                'triggered_reactions' => $reactions['stat_recommendations'],
-                'constellation_notes' => $constellationImpact['gameplay_notes'],
-                'role_shift' => $constellationImpact['role_shift'],
-                'content_profile' => $contentProfile,
+                'active_resonances' =>
+                    $resonances[
+                        'summary_buffs'
+                    ] ?? [],
+
+                'triggered_reactions' =>
+                    $reactions[
+                        'stat_recommendations'
+                    ] ?? [],
+
+                'constellation_notes' =>
+                    $constellationImpact[
+                        'gameplay_notes'
+                    ] ?? [],
+
+                'role_shift' =>
+                    $constellationImpact[
+                        'role_shift'
+                    ] ?? null,
+
+                'content_profile' =>
+                    $contentProfile,
             ],
 
-            'ai_recommendation' => $aiResponse['content'] ?? '',
+            'ai_recommendation' =>
+                $aiResponse['content']
+                ?? '',
 
-            'model' => $aiResponse['model'] ?? null,
+            'model' =>
+                $aiResponse['model']
+                ?? null,
 
-            'status' => $aiResponse['status'] ?? 'success',
+            'status' =>
+                $aiResponse['status']
+                ?? 'success',
 
-            /*
-             * Diteruskan supaya ChatbotService bisa menyimpan
-             * informasi diagnostik dari NVIDIA.
-             */
-            'tokens_used' => $aiResponse['tokens_used'] ?? null,
+            'tokens_used' =>
+                $aiResponse['tokens_used']
+                ?? null,
 
-            'source' => $aiResponse['source'] ?? null,
+            'source' =>
+                $aiResponse['source']
+                ?? null,
 
-            'fallback_reason' => $aiResponse['fallback_reason'] ?? null,
+            'fallback_reason' =>
+                $aiResponse['fallback_reason']
+                ?? null,
 
-            'recommendation_source' => $localRecommendation !== null
-                ? 'local_knowledge'
-                : (($aiResponse['status'] ?? null) === 'fallback' && ! $useLocalKnowledge
-                    ? 'ai_unavailable'
-                    : ($aiResponse['source'] ?? null)),
+            'recommendation_source' =>
+                $localRecommendation !== null
+                    ? 'local_knowledge'
+                    : (
+                        ($aiResponse['status'] ?? null)
+                        === 'fallback'
+                            ? 'ai_unavailable'
+                            : (
+                                $aiResponse['source']
+                                ?? null
+                            )
+                    ),
 
-            'knowledge_available' => $buildKnowledgeAvailable,
+            'knowledge_available' =>
+                $buildKnowledgeAvailable,
 
-            'knowledge_categories' => collect($ragChunks)
-                ->pluck('category')
-                ->unique()
-                ->values()
-                ->all(),
+            'knowledge_categories' =>
+                collect(
+                    $ragChunks
+                )
+                    ->pluck('category')
+                    ->unique()
+                    ->values()
+                    ->all(),
 
-            /*
-             * Informasi profiling internal.
-             * Bisa digunakan untuk debugging/performance monitoring.
-             */
             'performance' => [
-                'total_seconds' => round($totalDuration, 4),
-                'rag_seconds' => round($ragDuration, 4),
-                'prompt_seconds' => round($promptDuration, 4),
-                'nvidia_seconds' => round($nvidiaDuration, 4),
+                'total_seconds' =>
+                    round(
+                        $totalDuration,
+                        4
+                    ),
+
+                'rag_seconds' =>
+                    round(
+                        $ragDuration,
+                        4
+                    ),
+
+                'prompt_seconds' =>
+                    round(
+                        $promptDuration,
+                        4
+                    ),
+
+                'nvidia_seconds' =>
+                    round(
+                        $nvidiaDuration,
+                        4
+                    ),
             ],
         ];
     }
 
     /**
-     * Renders a build from stored character knowledge without calling an AI API.
+     * ============================================================
+     * LOCAL BUILD
+     * ============================================================
      */
     public function buildLocalRecommendation(
         string $characterSlug,
         string $contentMode = 'abyss'
     ): ?string {
-        $character = Character::query()
-            ->where('slug', $characterSlug)
-            ->orderByDesc('patch_version')
-            ->first();
+        $character =
+            Character::query()
+                ->where(
+                    'slug',
+                    $characterSlug
+                )
+                ->orderByDesc(
+                    'patch_version'
+                )
+                ->first();
 
-        if (!$character) {
+        if (
+            $character === null
+        ) {
             return null;
         }
 
-        $knowledge = BuildKnowledge::query()
-            ->where('character_id', $character->id)
-            ->where('patch_version', $character->patch_version)
-            ->where('category', '!=', 'character_overview')
-            ->where(function ($query) use ($contentMode) {
-                $query->where('target_content', $contentMode)
-                    ->orWhere('target_content', 'universal');
-            })
-            ->get();
+        $knowledge =
+            BuildKnowledge::query()
+                ->where(
+                    'character_id',
+                    $character->id
+                )
+                ->where(
+                    'patch_version',
+                    $character->patch_version
+                )
+                ->where(
+                    'category',
+                    '!=',
+                    'character_overview'
+                )
+                ->where(
+                    function ($query)
+                    use ($contentMode) {
+                        $query
+                            ->where(
+                                'target_content',
+                                $contentMode
+                            )
+                            ->orWhere(
+                                'target_content',
+                                'universal'
+                            );
+                    }
+                )
+                ->get();
 
-        if ($knowledge->isEmpty()) {
+        if (
+            $knowledge->isEmpty()
+        ) {
             return null;
         }
 
         $categoryOrder = [
-            'role_and_reactions' => 0,
-            'weapons_ranking' => 1,
-            'artifact_priorities' => 2,
-            'er_breakpoints' => 3,
-            'team_synergies' => 4,
-            'rotation' => 5,
+            'role_and_reactions' =>
+                0,
+
+            'weapons_ranking' =>
+                1,
+
+            'artifact_priorities' =>
+                2,
+
+            'er_breakpoints' =>
+                3,
+
+            'team_synergies' =>
+                4,
+
+            'rotation' =>
+                5,
         ];
-        $knowledge = $knowledge->sortBy(
-            fn (BuildKnowledge $chunk) => $categoryOrder[$chunk->category] ?? 99
-        );
 
-        $recommendation = "# Build {$character->name}\n\n";
-        $recommendation .= "Rekomendasi lokal untuk mode {$contentMode} (data patch {$character->patch_version}).\n\n";
+        $knowledge =
+            $knowledge->sortBy(
+                fn (
+                    BuildKnowledge $chunk
+                ) =>
+                    $categoryOrder[
+                        $chunk->category
+                    ]
+                    ?? 99
+            );
 
-        foreach ($knowledge as $chunk) {
-            $heading = match ($chunk->category) {
-                'role_and_reactions' => 'Peran dan Reaksi',
-                'weapons_ranking' => 'Senjata',
-                'artifact_priorities' => 'Artefak dan Stat',
-                'er_breakpoints' => 'Energy Recharge',
-                'team_synergies' => 'Rekomendasi Tim',
-                'rotation' => 'Rotasi',
-                default => ucfirst(str_replace('_', ' ', $chunk->category)),
-            };
+        $recommendation =
+            "# Build {$character->name}\n\n";
 
-            $recommendation .= "## {$heading}\n{$chunk->content}\n\n";
+        $recommendation .=
+            "Rekomendasi lokal untuk mode "
+            ."{$contentMode} "
+            ."(data patch "
+            ."{$character->patch_version})."
+            ."\n\n";
+
+        foreach (
+            $knowledge
+            as $chunk
+        ) {
+            $heading =
+                match (
+                    $chunk->category
+                ) {
+                    'role_and_reactions' =>
+                        'Peran dan Reaksi',
+
+                    'weapons_ranking' =>
+                        'Senjata',
+
+                    'artifact_priorities' =>
+                        'Artefak dan Stat',
+
+                    'er_breakpoints' =>
+                        'Energy Recharge',
+
+                    'team_synergies' =>
+                        'Rekomendasi Tim',
+
+                    'rotation' =>
+                        'Rotasi',
+
+                    default =>
+                        ucfirst(
+                            str_replace(
+                                '_',
+                                ' ',
+                                $chunk->category
+                            )
+                        ),
+                };
+
+            $recommendation .=
+                "## {$heading}\n"
+                .$chunk->content
+                ."\n\n";
         }
 
-        return trim($recommendation);
+        return trim(
+            $recommendation
+        );
     }
 
     /**
-     * Memproses teks bebas pengguna melalui Query Understanding
-     * lalu menghasilkan build.
+     * ============================================================
+     * FREE TEXT
+     * ============================================================
+     *
+     * Dipakai oleh endpoint Generate Build.
+     *
+     * Jangan gunakan method ini sebagai chatbot umum.
      */
-    public function processFreeTextQuery(string $rawQuery): array
-    {
-        $totalStart = microtime(true);
+    public function processFreeTextQuery(
+        string $rawQuery
+    ): array {
+        $extracted =
+            $this->entityExtractor
+                ->extract(
+                    $rawQuery
+                );
 
-        Log::info('[QUERY] ===== START processFreeTextQuery =====', [
-            'query' => $rawQuery,
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | 1. Entity Extraction
-        |--------------------------------------------------------------------------
-        */
-        $start = microtime(true);
-
-        $extracted = $this->entityExtractor->extract($rawQuery);
-
-        Log::info('[QUERY] Entity extraction completed', [
-            'duration_seconds' => round(microtime(true) - $start, 4),
-            'extracted' => $extracted,
-        ]);
+        $intent =
+            $this->intentClassifier
+                ->classify(
+                    $rawQuery
+                );
 
         /*
-        |--------------------------------------------------------------------------
-        | 2. Intent Classification
-        |--------------------------------------------------------------------------
-        */
-        $start = microtime(true);
-
-        $intent = $this->intentClassifier->classify($rawQuery);
-
-        Log::info('[QUERY] Intent classification completed', [
-            'duration_seconds' => round(microtime(true) - $start, 4),
-            'intent' => $intent,
-        ]);
+         * Jangan lagi default ke Furina.
+         */
+        $targetSlug =
+            $extracted['target_character']
+            ?? null;
 
         /*
-        |--------------------------------------------------------------------------
-        | 3. Ambil parameter hasil extraction
-        |--------------------------------------------------------------------------
-        */
-        $targetSlug = $extracted['target_character'] ?? 'furina';
-        $constellation = $extracted['constellation'] ?? 0;
-        $team = $extracted['team'] ?? [];
-        $contentMode = $extracted['content_mode'] ?? 'abyss';
+         * Endpoint build hanya menerima permintaan build.
+         */
+        if (
+            $intent !==
+            IntentClassifier::INTENT_BUILD
+        ) {
+            return [
+                'error' =>
+                    true,
 
-        Log::info('[QUERY] Parsed parameters', [
-            'target_character' => $targetSlug,
-            'constellation' => $constellation,
-            'team' => $team,
-            'content_mode' => $contentMode,
-        ]);
+                'message' =>
+                    'Pertanyaan ini bukan permintaan Generate Build. '
+                    .'Gunakan chatbot untuk pertanyaan umum.',
 
-        /*
-        |--------------------------------------------------------------------------
-        | 4. Generate Build
-        |--------------------------------------------------------------------------
-        */
-        $start = microtime(true);
+                'query_understanding' => [
+                    'intent' =>
+                        $intent,
 
-        $buildResult = $this->generateBuild(
-            $targetSlug,
-            $constellation,
-            $team,
-            $contentMode,
-            $rawQuery
-        );
+                    'extracted_entities' =>
+                        $extracted,
+                ],
+            ];
+        }
 
-        Log::info('[QUERY] generateBuild completed', [
-            'duration_seconds' => round(microtime(true) - $start, 4),
-        ]);
+        if (
+            empty($targetSlug)
+        ) {
+            return [
+                'error' =>
+                    true,
 
-        /*
-        |--------------------------------------------------------------------------
-        | 5. Tambahkan query understanding
-        |--------------------------------------------------------------------------
-        */
-        $buildResult['query_understanding'] = [
-            'intent' => $intent,
-            'extracted_entities' => $extracted,
+                'message' =>
+                    'Karakter untuk Generate Build belum ditentukan.',
+
+                'query_understanding' => [
+                    'intent' =>
+                        $intent,
+
+                    'extracted_entities' =>
+                        $extracted,
+                ],
+            ];
+        }
+
+        $constellation =
+            (int) (
+                $extracted['constellation']
+                ?? 0
+            );
+
+        $team =
+            $extracted['team']
+            ?? [];
+
+        $contentMode =
+            $extracted['content_mode']
+            ?? 'abyss';
+
+        $buildResult =
+            $this->generateBuild(
+                $targetSlug,
+                $constellation,
+                $team,
+                $contentMode,
+                $rawQuery
+            );
+
+        $buildResult[
+            'query_understanding'
+        ] = [
+            'intent' =>
+                $intent,
+
+            'extracted_entities' =>
+                $extracted,
         ];
-
-        $totalDuration = microtime(true) - $totalStart;
-
-        Log::info('[QUERY] ===== END processFreeTextQuery =====', [
-            'total_duration_seconds' => round($totalDuration, 4),
-        ]);
 
         return $buildResult;
     }
