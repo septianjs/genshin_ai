@@ -90,6 +90,36 @@ class BuildRecommendationApiTest extends TestCase
             ]);
     }
 
+    public function test_api_build_recommend_can_skip_local_knowledge_when_requested(): void
+    {
+        $this->createDilucLocalKnowledge();
+
+        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
+        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
+        $nvidia->shouldReceive('chat')
+            ->once()
+            ->andReturn([
+                'content' => 'Layanan AI sedang tidak tersedia.',
+                'status' => 'fallback',
+                'source' => 'local',
+                'fallback_reason' => 'CONNECTION_ERROR',
+            ]);
+
+        $this->app->instance(NvidiaService::class, $nvidia);
+
+        $response = $this->postJson('/api/build/recommend', [
+            'character' => 'diluc',
+            'content_mode' => 'abyss',
+            'use_local_knowledge' => false,
+        ]);
+
+        $response->assertStatus(200);
+        $this->assertStringContainsString('Layanan AI saat ini tidak tersedia', $response->json('data.ai_recommendation'));
+        $this->assertSame('ai_unavailable', $response->json('data.recommendation_source'));
+        $this->assertStringNotContainsString('# Build Diluc', $response->json('data.ai_recommendation'));
+    }
+
     public function test_api_chat_send_stores_and_replies(): void
     {
         $response = $this->postJson('/api/chat/send', [
@@ -176,8 +206,6 @@ class BuildRecommendationApiTest extends TestCase
         $this->createDilucLocalKnowledge();
 
         $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
-        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
         $nvidia->shouldReceive('chat')
             ->once()
             ->andReturn([
@@ -243,67 +271,7 @@ class BuildRecommendationApiTest extends TestCase
         $this->assertStringContainsString('[DONE]', $content);
     }
 
-    public function test_chat_stream_http_endpoint_runs_build_pipeline_and_returns_build_result(): void
-    {
-        Character::create([
-            'slug' => 'barbara',
-            'name' => 'Barbara',
-            'vision' => 'HYDRO',
-            'weapon_type' => 'CATALYST',
-            'rarity' => 4,
-            'patch_version' => '7.0',
-        ]);
-
-        $barbara = Character::where('slug', 'barbara')->firstOrFail();
-        BuildKnowledge::create([
-            'character_id' => $barbara->id,
-            'category' => 'artifact_priorities',
-            'title' => 'Panduan artefak Barbara',
-            'content' => 'Panduan theorycraft Barbara yang digunakan untuk rekomendasi.',
-            'target_content' => 'universal',
-            'embedding' => [1.0, 0.0],
-            'patch_version' => '7.0',
-        ]);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
-        $nvidia->shouldReceive('generateEmbedding')->once()->withArgs(
-            fn (string $query) => str_contains($query, 'Barbara')
-                && str_contains($query, 'DPS')
-        )->andReturn([1.0, 0.0]);
-        $nvidia->shouldReceive('chat')
-            ->once()
-            ->withArgs(function (array $messages, float $temperature, int $maxTokens): bool {
-                return $temperature === 0.2
-                    && $maxTokens === 800
-                    && str_contains($messages[0]['content'], 'Panduan theorycraft Barbara')
-                    && $messages[1]['content'] === 'hai, saya ingin build Barbara DPS';
-            })
-            ->andReturn([
-                'content' => '# Build Barbara DPS',
-                'status' => 'success',
-                'source' => 'nvidia',
-                'model' => 'test-model',
-                'tokens_used' => 15,
-            ]);
-        $nvidia->shouldNotReceive('chatStream');
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $response = $this->post('/api/chat/stream', [
-            'session_token' => 'barbara_build_http_flow',
-            'message' => 'hai, saya ingin build Barbara DPS',
-            'character' => 'furina',
-        ], ['Accept' => 'text/event-stream']);
-
-        $response->assertOk();
-        $content = $response->streamedContent();
-        $this->assertStringContainsString('# Build Barbara DPS', $content);
-        $this->assertStringContainsString('type":"build_result"', $content);
-        $this->assertStringContainsString('"slug":"barbara"', $content);
-        $this->assertStringContainsString('[DONE]', $content);
-    }
-
-    public function test_chat_send_http_endpoint_returns_build_pipeline_result(): void
+    public function test_chat_stream_http_endpoint_keeps_build_requests_inside_chatbot_flow(): void
     {
         Character::create([
             'slug' => 'barbara',
@@ -315,11 +283,61 @@ class BuildRecommendationApiTest extends TestCase
         ]);
 
         $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldReceive('generateBuild')
-            ->once()
-            ->with('barbara', 0, [], 'abyss', 'build karakter Barbara DPS')
-            ->andReturn($this->buildResponseFixture('Barbara'));
+        $recommendationEngine->shouldNotReceive('generateBuild');
         $this->app->instance(RecommendationEngine::class, $recommendationEngine);
+
+        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia->shouldReceive('chatStream')
+            ->once()
+            ->andReturn([
+                'content' => '# Build Barbara DPS',
+                'status' => 'success',
+                'source' => 'nvidia',
+                'model' => 'test-model',
+                'tokens_used' => 15,
+            ]);
+        $this->app->instance(NvidiaService::class, $nvidia);
+
+        $response = $this->post('/api/chat/stream', [
+            'session_token' => 'barbara_build_http_flow',
+            'message' => 'hai, saya ingin build Barbara DPS',
+            'character' => 'furina',
+        ], ['Accept' => 'text/event-stream']);
+
+        $response->assertOk();
+        $content = $response->streamedContent();
+        $this->assertStringContainsString('# Build Barbara DPS', $content);
+        $this->assertStringNotContainsString('type":"build_result"', $content);
+        $this->assertStringNotContainsString('"slug":"barbara"', $content);
+        $this->assertStringContainsString('[DONE]', $content);
+    }
+
+    public function test_chat_send_http_endpoint_keeps_build_requests_inside_chatbot_flow(): void
+    {
+        Character::create([
+            'slug' => 'barbara',
+            'name' => 'Barbara',
+            'vision' => 'HYDRO',
+            'weapon_type' => 'CATALYST',
+            'rarity' => 4,
+            'patch_version' => '7.0',
+        ]);
+
+        $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
+        $recommendationEngine->shouldNotReceive('generateBuild');
+        $this->app->instance(RecommendationEngine::class, $recommendationEngine);
+
+        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia->shouldReceive('chat')
+            ->once()
+            ->andReturn([
+                'content' => 'Jawaban chatbot untuk build Barbara tanpa memicu Generate Build.',
+                'status' => 'success',
+                'source' => 'nvidia',
+                'model' => 'test-model',
+                'tokens_used' => 15,
+            ]);
+        $this->app->instance(NvidiaService::class, $nvidia);
 
         $response = $this->postJson('/api/chat/send', [
             'session_token' => 'barbara_build_json_flow',
@@ -328,14 +346,12 @@ class BuildRecommendationApiTest extends TestCase
         ]);
 
         $response->assertOk()
-            ->assertJsonPath('message.content', 'Barbara DPS recommendation')
+            ->assertJsonPath('message.content', 'Jawaban chatbot untuk build Barbara tanpa memicu Generate Build.')
             ->assertJsonPath('message.meta_payload.intent', 'BUILD_RECOMMENDATION')
-            ->assertJsonPath('message.meta_payload.role', 'dps')
-            ->assertJsonPath('build_data.character.slug', 'barbara')
-            ->assertJsonPath('build_data.ai_recommendation', 'Barbara DPS recommendation');
+            ->assertJsonPath('build_data', null);
     }
 
-    public function test_build_follow_up_with_another_character_reuses_build_intent(): void
+    public function test_build_follow_up_with_another_character_reuses_build_intent_in_chatbot_flow(): void
     {
         Character::create([
             'slug' => 'barbara',
@@ -359,15 +375,19 @@ class BuildRecommendationApiTest extends TestCase
         ]);
 
         $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldReceive('generateBuild')
-            ->once()
-            ->with('barbara', 0, [], 'abyss', 'kalau barbara')
-            ->andReturn($this->buildResponseFixture('Barbara'));
+        $recommendationEngine->shouldNotReceive('generateBuild');
         $this->app->instance(RecommendationEngine::class, $recommendationEngine);
 
         $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldNotReceive('chat');
-        $nvidia->shouldNotReceive('chatStream');
+        $nvidia->shouldReceive('chat')
+            ->once()
+            ->andReturn([
+                'content' => 'Chatbot follow-up untuk Barbara tanpa memicu Generate Build.',
+                'status' => 'success',
+                'source' => 'nvidia',
+                'model' => 'test-model',
+                'tokens_used' => 10,
+            ]);
         $this->app->instance(NvidiaService::class, $nvidia);
 
         $response = $this->postJson('/api/chat/send', [
@@ -377,9 +397,47 @@ class BuildRecommendationApiTest extends TestCase
         ]);
 
         $response->assertOk()
-            ->assertJsonPath('message.content', 'Barbara DPS recommendation')
+            ->assertJsonPath('message.content', 'Chatbot follow-up untuk Barbara tanpa memicu Generate Build.')
             ->assertJsonPath('message.meta_payload.intent', 'BUILD_RECOMMENDATION')
-            ->assertJsonPath('build_data.character.slug', 'barbara');
+            ->assertJsonPath('build_data', null);
+    }
+
+    public function test_chat_follow_up_clears_stale_active_team_before_new_character_context(): void
+    {
+        Character::create([
+            'slug' => 'barbara',
+            'name' => 'Barbara',
+            'vision' => 'HYDRO',
+            'weapon_type' => 'CATALYST',
+            'rarity' => 4,
+            'patch_version' => '7.0',
+        ]);
+
+        $conversation = Conversation::create([
+            'session_token' => 'stale_team_context',
+            'character_slug' => 'diluc',
+            'active_team' => ['albedo'],
+            'target_content' => 'abyss',
+            'patch_version' => '7.0',
+        ]);
+
+        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia->shouldReceive('chat')
+            ->once()
+            ->andReturn([
+                'content' => 'Tim lama tidak ikut dipakai karena konteks baru.',
+                'status' => 'success',
+                'source' => 'nvidia',
+                'model' => 'test-model',
+                'tokens_used' => 8,
+            ]);
+        $this->app->instance(NvidiaService::class, $nvidia);
+
+        $result = app(ChatbotService::class)->handleMessage($conversation, 'mekanik barbara');
+
+        $this->assertStringContainsString('Tim lama tidak ikut dipakai', $result['bot_message']->content);
+        $this->assertSame('barbara', $conversation->fresh()->character_slug);
+        $this->assertSame([], $conversation->fresh()->active_team);
     }
 
     public function test_mechanics_question_uses_matching_local_knowledge_when_ai_is_unavailable(): void
@@ -518,9 +576,7 @@ class BuildRecommendationApiTest extends TestCase
         $this->createDilucLocalKnowledge();
 
         $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
-        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
-        $nvidia->shouldReceive('chat')
+        $nvidia->shouldReceive('chatStream')
             ->once()
             ->andReturn([
                 'content' => 'Sistem rekomendasi lokal digunakan.',
@@ -581,9 +637,7 @@ class BuildRecommendationApiTest extends TestCase
         $this->createDilucLocalKnowledge();
 
         $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
-        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
-        $nvidia->shouldReceive('chat')
+        $nvidia->shouldReceive('chatStream')
             ->once()
             ->andReturn([
                 'content' => "Here's a thinking process:\n\n1. **Analyze User Input:** build diluc",
@@ -614,8 +668,6 @@ class BuildRecommendationApiTest extends TestCase
         $this->createDilucLocalKnowledge();
 
         $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
-        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
         $nvidia->shouldReceive('chat')
             ->once()
             ->andReturn([

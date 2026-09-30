@@ -95,54 +95,6 @@ class ChatbotService
             $userMessageText
         );
 
-        if ($intent === IntentClassifier::INTENT_BUILD) {
-            $buildData = $this->recommendationEngine->generateBuild(
-                $context['target_character'],
-                $context['constellation'],
-                $context['team'],
-                $context['content_mode'],
-                $userMessageText
-            );
-
-            $replyContent = $buildData['ai_recommendation']
-                ?? $buildData['message']
-                ?? 'Rekomendasi build belum dapat disusun untuk permintaan ini.';
-            $localRecommendation = null;
-            if ($this->containsInternalReasoning($replyContent)) {
-                $localRecommendation = $this->recommendationEngine->buildLocalRecommendation(
-                    $context['target_character'],
-                    $context['content_mode']
-                );
-                $replyContent = $localRecommendation
-                    ?? $this->localGuideUnavailableMessage($context['target_character']);
-            }
-            $botMessage = Message::create([
-                'conversation_id' => $conversation->id,
-                'role' => 'assistant',
-                'content' => $replyContent,
-                'meta_payload' => [
-                    'intent' => $intent,
-                    'character' => $context['target_character'],
-                    'role' => $context['extracted']['role'] ?? null,
-                    'model' => $buildData['model'] ?? null,
-                    'source' => $buildData['source'] ?? null,
-                    'status' => $buildData['status'] ?? null,
-                    'recommendation_source' => $localRecommendation !== null
-                        ? 'local_knowledge'
-                        : ($buildData['recommendation_source'] ?? null),
-                    'chat_mode' => 'build',
-                    'streaming' => false,
-                ],
-                'tokens_used' => $buildData['tokens_used'] ?? null,
-            ]);
-
-            return [
-                'user_message' => $userMessage,
-                'bot_message' => $botMessage,
-                'build_data' => $buildData,
-            ];
-        }
-
         $aiResponse = $this->nvidiaService->chat(
             $context['messages'],
             0.2,
@@ -273,57 +225,6 @@ class ChatbotService
             $conversation,
             $userMessageText
         );
-
-        if ($intent === IntentClassifier::INTENT_BUILD) {
-            $buildData = $this->recommendationEngine->generateBuild(
-                $context['target_character'],
-                $context['constellation'],
-                $context['team'],
-                $context['content_mode'],
-                $userMessageText
-            );
-            $replyContent = $buildData['ai_recommendation']
-                ?? $buildData['message']
-                ?? 'Rekomendasi build belum dapat disusun untuk permintaan ini.';
-            $localRecommendation = null;
-            if ($this->containsInternalReasoning($replyContent)) {
-                $localRecommendation = $this->recommendationEngine->buildLocalRecommendation(
-                    $context['target_character'],
-                    $context['content_mode']
-                );
-                $replyContent = $localRecommendation
-                    ?? $this->localGuideUnavailableMessage($context['target_character']);
-            }
-            $onToken($replyContent);
-            $botMessage = Message::create([
-                'conversation_id' => $conversation->id,
-                'role' => 'assistant',
-                'content' => $replyContent,
-                'meta_payload' => [
-                    'intent' => $intent,
-                    'character' => $context['target_character'],
-                    'role' => $context['extracted']['role'] ?? null,
-                    'model' => $buildData['model'] ?? null,
-                    'source' => $buildData['source'] ?? null,
-                    'status' => $buildData['status'] ?? null,
-                    'recommendation_source' => $localRecommendation !== null
-                        ? 'local_knowledge'
-                        : ($buildData['recommendation_source'] ?? null),
-                    'chat_mode' => 'build',
-                    'streaming' => true,
-                ],
-                'tokens_used' => $buildData['tokens_used'] ?? null,
-            ]);
-
-            return [
-                'user_message' => $userMessage,
-                'bot_message' => $botMessage,
-                'ai_response' => $buildData,
-                'build_data' => $buildData,
-                'target_character' => $context['target_character'],
-                'total_seconds' => round(microtime(true) - $startTime, 4),
-            ];
-        }
 
         Log::info(
             '[CHAT] ===== START STREAM =====',
@@ -649,17 +550,21 @@ class ChatbotService
         string $characterSlug,
         string $contentMode
     ): ?string {
-        $category = match ($intent) {
+        if ($intent === IntentClassifier::INTENT_BUILD) {
+            return $this->recommendationEngine->buildLocalRecommendation($characterSlug, $contentMode);
+        }
+
+        $categories = match ($intent) {
             IntentClassifier::INTENT_WEAPON_QUESTION,
-            IntentClassifier::INTENT_WEAPON_COMPARE => 'weapons_ranking',
-            IntentClassifier::INTENT_ARTIFACT_QUESTION => 'artifact_priorities',
-            IntentClassifier::INTENT_TEAM_SYNERGY => 'team_synergies',
-            IntentClassifier::INTENT_ROTATION => 'rotation',
-            IntentClassifier::INTENT_MECHANICS => 'role_and_reactions',
+            IntentClassifier::INTENT_WEAPON_COMPARE => ['weapons_ranking'],
+            IntentClassifier::INTENT_ARTIFACT_QUESTION => ['artifact_priorities'],
+            IntentClassifier::INTENT_TEAM_SYNERGY => ['team_synergies'],
+            IntentClassifier::INTENT_ROTATION => ['rotation'],
+            IntentClassifier::INTENT_MECHANICS => ['role_and_reactions'],
             default => null,
         };
 
-        if ($category === null) {
+        if ($categories === null || $categories === []) {
             return null;
         }
 
@@ -671,7 +576,7 @@ class ChatbotService
         $knowledge = BuildKnowledge::query()
             ->where('character_id', $character->id)
             ->where('patch_version', $character->patch_version)
-            ->where('category', $category)
+            ->whereIn('category', $categories)
             ->where(function ($query) use ($contentMode) {
                 $query->where('target_content', $contentMode)
                     ->orWhere('target_content', 'universal');
@@ -724,25 +629,34 @@ class ChatbotService
             ?? $conversation->target_content
             ?? 'abyss';
 
-        $team =
-            ! empty($extracted['team'])
-                ? $extracted['team']
-                : ($conversation->active_team ?? []);
+        $team = ! empty($extracted['team'])
+            ? $extracted['team']
+            : ($conversation->active_team ?? []);
 
         if (! is_array($team)) {
             $team = [];
         }
 
+        $explicitTargetCharacter = ! empty($extracted['target_character']);
+
         /*
-         * Jika user secara eksplisit menyebut karakter,
-         * jadikan karakter tersebut sebagai karakter aktif.
+         * A newly explicit target character must replace stale session context.
+         * This prevents the previous session's team/character from silently
+         * leaking into the next chat turn.
          */
-        if (! empty($extracted['target_character'])) {
+        if ($explicitTargetCharacter) {
+            $team = $extracted['team'] ?? [];
 
             $conversation->update([
                 'character_slug' => $extracted['target_character'],
-
                 'target_content' => $contentMode,
+                'active_team' => $team,
+            ]);
+
+            $conversation->refresh();
+        } elseif ($extracted['team'] !== []) {
+            $conversation->update([
+                'active_team' => $team,
             ]);
 
             $conversation->refresh();
@@ -856,7 +770,7 @@ PROMPT;
          * dipanggil sebelum method ini.
          */
         if (
-            empty($history)
+            $history->isEmpty()
             || $history->last()->role !== 'user'
             || $history->last()->content !== $userMessageText
         ) {

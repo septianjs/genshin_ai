@@ -760,7 +760,16 @@
 
             <!-- Generate -->
 
-            <div class="mt-4">
+            <div class="mt-4 space-y-2">
+
+                <label class="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                        type="checkbox"
+                        x-model="useLocalKnowledge"
+                        class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-amber-400 focus:ring-amber-500"
+                    >
+                    Gunakan panduan lokal saat AI tidak tersedia
+                </label>
 
                 <button
                     type="button"
@@ -1327,6 +1336,8 @@
 
             buildResult: null,
 
+            useLocalKnowledge: true,
+
             loadingBuild: false,
 
             loadingChat: false,
@@ -1334,6 +1345,8 @@
             chatStreamStarted: false,
 
             chatInput: '',
+
+            chatCharacter: null,
 
             sessionToken: '',
 
@@ -1715,6 +1728,9 @@
 
                         content_mode:
                             this.contentMode,
+
+                        use_local_knowledge:
+                            this.useLocalKnowledge,
 
                     };
 
@@ -2231,8 +2247,9 @@
                                         message:
                                             msg,
 
-                                        character:
-                                            this.selectedSlug
+                                        ...(this.chatCharacter
+                                            ? { character: this.chatCharacter }
+                                            : {})
 
                                     })
 
@@ -2301,8 +2318,9 @@
                             );
                         }
 
-                        if (event.type === 'build_result' && event.data) {
-                            this.buildResult = event.data;
+                        if (event.type === 'build_result') {
+                            console.debug('[CHAT] Ignoring build_result event to keep chatbot state isolated from Generate Build state.');
+                            return false;
                         }
 
                         if (

@@ -67,6 +67,7 @@ class BuildController extends Controller
             'team' => 'nullable|array',
             'content_mode' => 'nullable|string',
             'custom_query' => 'nullable|string',
+            'use_local_knowledge' => 'nullable|boolean',
         ]);
 
         $characterSlug = $request->input('character');
@@ -74,6 +75,7 @@ class BuildController extends Controller
         $team = $request->input('team', []);
         $contentMode = $request->input('content_mode', 'abyss');
         $customQuery = $request->input('custom_query');
+        $useLocalKnowledge = $request->boolean('use_local_knowledge', true);
 
         set_time_limit(120);
 
@@ -83,7 +85,8 @@ class BuildController extends Controller
                 $constellation,
                 $team,
                 $contentMode,
-                $customQuery
+                $customQuery,
+                $useLocalKnowledge
             );
 
             if (!empty($result['error'])) {

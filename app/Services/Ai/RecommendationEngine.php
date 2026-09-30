@@ -39,7 +39,8 @@ class RecommendationEngine
         int $constellation = 0,
         array $teammateSlugs = [],
         string $contentMode = 'abyss',
-        ?string $customQuery = null
+        ?string $customQuery = null,
+        bool $useLocalKnowledge = true
     ): array {
         $totalStart = microtime(true);
         Log::info('[AI PERF] Request started', [
@@ -303,15 +304,19 @@ class RecommendationEngine
         $localRecommendation = null;
 
         if (($aiResponse['status'] ?? null) === 'fallback') {
-            $localRecommendation = $this->buildLocalRecommendation(
-                $character->slug,
-                $contentMode
-            );
+            if ($useLocalKnowledge) {
+                $localRecommendation = $this->buildLocalRecommendation(
+                    $character->slug,
+                    $contentMode
+                );
 
-            if ($localRecommendation !== null) {
-                $aiResponse['content'] = $localRecommendation;
+                if ($localRecommendation !== null) {
+                    $aiResponse['content'] = $localRecommendation;
+                } else {
+                    $aiResponse['content'] = "Koneksi AI tidak tersedia dan panduan lokal untuk {$character->name} belum tersedia.";
+                }
             } else {
-                $aiResponse['content'] = "Koneksi AI tidak tersedia dan panduan lokal untuk {$character->name} belum tersedia.";
+                $aiResponse['content'] = "Layanan AI saat ini tidak tersedia. Silakan coba lagi nanti atau aktifkan penggunaan panduan lokal jika Anda ingin mengandalkan data lokal.";
             }
         }
 
@@ -408,7 +413,9 @@ class RecommendationEngine
 
             'recommendation_source' => $localRecommendation !== null
                 ? 'local_knowledge'
-                : ($aiResponse['source'] ?? null),
+                : (($aiResponse['status'] ?? null) === 'fallback' && ! $useLocalKnowledge
+                    ? 'ai_unavailable'
+                    : ($aiResponse['source'] ?? null)),
 
             'knowledge_available' => $buildKnowledgeAvailable,
 
