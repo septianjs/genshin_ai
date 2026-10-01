@@ -12,7 +12,8 @@ class ContextBuilder
     public function buildSystemPrompt(
         Character $character,
         array $mechanicsData,
-        array $ragChunks = []
+        array $ragChunks = [],
+        array $teamCandidates = []
     ): string {
         $vision = $character->vision;
         $weapon = $character->weapon_type;
@@ -20,8 +21,10 @@ class ContextBuilder
             ?? config('services.genshin.target_patch', 'unknown');
 
         $constellationLevel = $mechanicsData['constellation']['constellation_level'] ?? 0;
+        $characterKitText = $this->characterKitText($character, (int) $constellationLevel);
         $contentMode = $mechanicsData['content_profile']['name'] ?? 'Spiral Abyss';
         $teamCharacters = $mechanicsData['team'] ?? [];
+        $teamCandidatesText = $this->teamCandidateText($teamCandidates);
 
         // 1. Data Mekanik Tim (Resonansi & Reaksi)
         $resonancesText = '';
@@ -97,12 +100,18 @@ Anda adalah **Genshin Build AI**, asisten Genshin Impact (target patch konfigura
 ### ATURAN UTAMA:
 1. Bedakan tegas fakta entity dari knowledge theorycraft. Jangan menyebut rekomendasi sebagai hasil RAG bila tidak ada knowledge relevan.
 2. Analisis Anda harus secara spesifik mempertimbangkan **Tingkat Konstelasi C{$constellationLevel}**, **Target Konten: {$contentMode}**, dan **Sinergi Reaksi Tim**.
-3. Jangan mengarang build, senjata, artefak, angka, atau mekanik yang tidak didukung context. Bila detail build tidak tersedia, sebutkan keterbatasannya dengan jelas.
-4. Sajikan rekomendasi secara langsung, padat, dan terstruktur tanpa penalaran internal:
-   - **Analisis Peran & Efek Konstelasi C{$constellationLevel}**
-   - Rekomendasi senjata dan artefak hanya jika didukung knowledge yang tersedia; jangan membuat ranking.
-   - Stat utama, substat, rasio CRIT, dan target ER hanya jika didukung knowledge; jika tidak, nyatakan belum tersedia.
-   - Rotasi dan reaksi tim hanya jika didukung oleh knowledge atau mekanik tim yang diberikan.
+3. Analisis kit karakter yang diberikan untuk menentukan pola damage, role, scaling, kebutuhan energi, dan stat yang mendukung kit. Jangan hanya mengulang retrieved knowledge.
+4. Gunakan retrieved knowledge sebagai referensi, bukan satu-satunya sumber. Bedakan fakta kit dari rekomendasi hasil analisis; tandai perkiraan sebagai perkiraan dan jangan mengklaimnya sebagai data terkurasi.
+5. Jangan mengarang angka talent, efek senjata/artefak, atau mekanik yang tidak ada di context. Target ER boleh berupa kisaran awal yang diberi label perkiraan dan harus dijelaskan sebagai bergantung pada tim/rotasi. Jangan membuat ranking mutlak tanpa dasar.
+6. Sajikan rekomendasi dalam Bahasa Indonesia dengan bagian berikut:
+    - **Peran dan Analisis Kit**: simpulkan role, scaling, dan pola damage dari deskripsi skill/konstelasi yang tersedia.
+    - **Artefak**: set utama dan alternatif, main stat Sands/Goblet/Circlet, serta substat berurutan.
+    - **Senjata**: beberapa opsi yang sesuai tipe senjata, dengan alasan singkat; jangan mengarang efek atau ranking yang tidak didukung.
+    - **Tim yang Direkomendasikan**: jika user belum menetapkan tim, pilih sampai tiga karakter hanya dari roster kandidat lokal di bawah. Jelaskan role tiap anggota, reaksi, dan sinerginya. Jika roster kosong, katakan bahwa kandidat lokal tidak tersedia dan jangan mengarang nama karakter.
+    - **Stat Prioritas**: stat yang dicari dan alasan berdasarkan scaling/reaksi. Angka target ER atau rasio hanya boleh berupa estimasi yang diberi label dan dijelaskan bergantung pada tim/rotasi.
+    - **Rotasi Singkat**: urutan aksi yang sesuai kit dan tim.
+7. Jika user sudah memilih rekan tim, evaluasi pilihan tersebut terlebih dahulu; boleh berikan alternatif dari roster dengan alasan. Bedakan fakta database, panduan lokal, dan inferensi model.
+8. Database karakter tidak menyimpan lembar stat tempur lengkap. Jangan mengaku membaca base stat atau membuat angka stat spesifik yang tidak diberikan.
 
 ---
 
@@ -116,10 +125,16 @@ Anda adalah **Genshin Build AI**, asisten Genshin Impact (target patch konfigura
 {$constellationNotes}
 - **Pergeseran Peran C{$constellationLevel}**: {$roleShift}
 
+### [KIT KARAKTER — TALENT DAN KONSTELASI DARI DATABASE]
+{$characterKitText}
+
 ---
 
 ### [KONFIGURASI TIM — entity data]
 {$teamText}
+
+### [ROSTER KARAKTER LOKAL — KANDIDAT TIM]
+{$teamCandidatesText}
 
 ---
 
@@ -142,10 +157,87 @@ Status knowledge build lokal: {$knowledgeStatus}
 PROMPT;
     }
 
+    protected function teamCandidateText(array $candidates): string
+    {
+        if ($candidates === []) {
+            return 'Roster karakter tervalidasi pada patch ini tidak tersedia.';
+        }
+
+        return collect($candidates)
+            ->map(function (array $candidate): string {
+                return '- '.($candidate['name'] ?? 'Unknown')
+                    .' ('.($candidate['vision'] ?? 'UNKNOWN')
+                    .' / '.($candidate['weapon_type'] ?? 'UNKNOWN').')';
+            })
+            ->implode("\n");
+    }
+
+    protected function characterKitText(Character $character, int $constellationLevel): string
+    {
+        $talents = collect($character->skill_data ?? [])
+            ->filter(fn ($skill) => is_array($skill))
+            ->take(4)
+            ->map(function (array $skill): string {
+                $name = trim((string) ($skill['name'] ?? 'Talent'));
+                $unlock = trim((string) ($skill['unlock'] ?? ''));
+                $description = preg_replace('/\s+/u', ' ', trim((string) ($skill['description'] ?? ''))) ?? '';
+
+                if (mb_strlen($description) > 500) {
+                    $description = mb_substr($description, 0, 500).'...';
+                }
+
+                $upgrades = collect($skill['upgrades'] ?? [])
+                    ->filter(fn ($upgrade) => is_array($upgrade))
+                    ->take(5)
+                    ->map(fn (array $upgrade) => trim((string) ($upgrade['name'] ?? '').' '.(string) ($upgrade['value'] ?? '')))
+                    ->filter()
+                    ->implode('; ');
+
+                $line = '- '.($unlock !== '' ? "{$unlock}: " : '').$name;
+
+                if ($description !== '') {
+                    $line .= ". {$description}";
+                }
+
+                if ($upgrades !== '') {
+                    $line .= " | Data upgrade: {$upgrades}";
+                }
+
+                return $line;
+            });
+
+        $constellations = collect($character->constellation_data ?? [])
+            ->filter(fn ($constellation) => is_array($constellation)
+                && (int) ($constellation['level'] ?? 0) > 0
+                && (int) $constellation['level'] <= $constellationLevel)
+            ->map(function (array $constellation): string {
+                $level = (int) ($constellation['level'] ?? 0);
+                $name = trim((string) ($constellation['name'] ?? "C{$level}"));
+                $description = preg_replace('/\s+/u', ' ', trim((string) ($constellation['description'] ?? ''))) ?? '';
+
+                if (mb_strlen($description) > 350) {
+                    $description = mb_substr($description, 0, 350).'...';
+                }
+
+                return "- C{$level} {$name}: {$description}";
+            });
+
+        $lines = $talents->all();
+
+        if ($constellationLevel > 0 && $constellations->isNotEmpty()) {
+            $lines[] = 'Konstelasi yang terbuka hingga C'.$constellationLevel.':'
+                ."\n".$constellations->implode("\n");
+        }
+
+        return $lines !== []
+            ? implode("\n", $lines)
+            : 'Data talent karakter tidak tersedia; jangan menyimpulkan mekanik kit yang spesifik.';
+    }
+
     protected function knowledgeStatusText(bool $available): string
     {
         return $available
-            ? 'Tersedia; periksa sumber/provenance pada setiap chunk.'
-            : 'Tidak tersedia; entity data dan mekanik bukan pengganti panduan build terkurasi.';
+            ? 'Tersedia sebagai referensi terkurasi, tetapi bukan batas analisis.'
+            : 'Tidak tersedia; susun analisis build dari kit karakter dan tandai rekomendasi sebagai inferensi.';
     }
 }

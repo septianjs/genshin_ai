@@ -1587,13 +1587,13 @@ PROMPT;
         string $content
     ): bool {
         $patterns = [
-            '/^\s*here(?:\'|’)s\s+(?:a\s+)?thinking process\b/iu',
+            '/here(?:\'|’)s\s+(?:a\s+)?thinking process\b/iu',
 
-            '/^\s*(?:thinking process|internal reasoning)\s*:/iu',
+            '/(?:thinking process|internal reasoning)\s*:/iu',
 
-            '/^\s*(?:let me think|let me analyze|let\'s think step by step)\b/iu',
+            '/(?:let me think|let me analyze|let\'s think step by step)\b/iu',
 
-            '/^\s*\d+[.)]\s*(?:\*\*)?(?:analyze user input|check system\/context constraints|determine response strategy)\b/iu',
+            '/\b(?:analyze user input|check system\/context constraints|determine response strategy)\b/iu',
         ];
 
         foreach (

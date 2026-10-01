@@ -90,6 +90,45 @@ class BuildRecommendationApiTest extends TestCase
             ]);
     }
 
+    public function test_build_prompt_gives_ai_roster_candidates_and_requires_complete_recommendations(): void
+    {
+        Character::where('slug', 'furina')->update([
+            'skill_data' => [[
+                'name' => 'Salon Solitaire',
+                'description' => 'Furina changes her current Arkhe alignment and summons Salon Members.',
+            ]],
+        ]);
+
+        $vectorStore = \Mockery::mock(\App\Services\Rag\VectorStoreService::class);
+        $vectorStore->shouldReceive('searchSimilar')->once()->andReturn([]);
+        $this->app->instance(\App\Services\Rag\VectorStoreService::class, $vectorStore);
+
+        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia->shouldReceive('chat')
+            ->once()
+            ->withArgs(function (array $messages): bool {
+                $prompt = $messages[0]['content'] ?? '';
+
+                return str_contains($prompt, 'ROSTER KARAKTER LOKAL')
+                    && str_contains($prompt, 'Albedo (GEO / SWORD)')
+                    && str_contains($prompt, 'Salon Solitaire')
+                    && str_contains($prompt, '**Artefak**')
+                    && str_contains($prompt, '**Senjata**')
+                    && str_contains($prompt, '**Tim yang Direkomendasikan**')
+                    && str_contains($prompt, '**Stat Prioritas**');
+            })
+            ->andReturn([
+                'content' => 'Rekomendasi build lengkap.',
+                'status' => 'success',
+                'source' => 'nvidia',
+            ]);
+        $this->app->instance(NvidiaService::class, $nvidia);
+
+        $result = app(RecommendationEngine::class)->generateBuild('furina');
+
+        $this->assertSame('Rekomendasi build lengkap.', $result['ai_recommendation']);
+    }
+
     public function test_api_build_recommend_can_skip_local_knowledge_when_requested(): void
     {
         $this->createDilucLocalKnowledge();
@@ -165,6 +204,32 @@ class BuildRecommendationApiTest extends TestCase
         $this->assertStringContainsString('Crimson Witch of Flames', $result['ai_recommendation']);
     }
 
+    public function test_build_replaces_reasoning_leak_after_heading_with_local_guide(): void
+    {
+        $this->createDilucLocalKnowledge();
+
+        $vectorStore = \Mockery::mock(\App\Services\Rag\VectorStoreService::class);
+        $vectorStore->shouldReceive('searchSimilar')->once()->andReturn([]);
+        $this->app->instance(\App\Services\Rag\VectorStoreService::class, $vectorStore);
+
+        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia->shouldReceive('chat')->once()->andReturn([
+            'content' => "🧠\nAI Analysis\n\nHere's a thinking process:\n\n1. **Analyze User Input:** build diluc",
+            'status' => 'success',
+            'source' => 'nvidia',
+        ]);
+        $this->app->instance(NvidiaService::class, $nvidia);
+
+        $result = app(RecommendationEngine::class)->generateBuild('diluc');
+
+        $this->assertSame('fallback', $result['status']);
+        $this->assertSame('INTERNAL_REASONING_FILTERED', $result['fallback_reason']);
+        $this->assertSame('local_knowledge', $result['recommendation_source']);
+        $this->assertStringContainsString('# Build Diluc', $result['ai_recommendation']);
+        $this->assertStringNotContainsString('thinking process', $result['ai_recommendation']);
+        $this->assertStringNotContainsString('Analyze User Input', $result['ai_recommendation']);
+    }
+
     public function test_local_build_guide_is_available_for_arlecchino(): void
     {
         $this->createArlecchinoLocalKnowledge();
@@ -177,6 +242,75 @@ class BuildRecommendationApiTest extends TestCase
         $this->assertStringContainsString('Fragment of Harmonic Whimsy', $recommendation);
         $this->assertStringContainsString('Vaporize', $recommendation);
         $this->assertStringContainsString('Normal Attack', $recommendation);
+    }
+
+    public function test_theorycraft_seeder_provides_barbara_build_and_local_profiles_without_nvidia(): void
+    {
+        foreach ([
+            ['slug' => 'barbara', 'name' => 'Barbara', 'vision' => 'Hydro', 'weapon_type' => 'Catalyst', 'rarity' => 4],
+            ['slug' => 'nahida', 'name' => 'Nahida', 'vision' => 'Dendro', 'weapon_type' => 'Catalyst', 'rarity' => 5],
+            ['slug' => 'xiao', 'name' => 'Xiao', 'vision' => 'Anemo', 'weapon_type' => 'Polearm', 'rarity' => 5],
+            ['slug' => 'xingqiu', 'name' => 'Xingqiu', 'vision' => 'Hydro', 'weapon_type' => 'Sword', 'rarity' => 4],
+        ] as $characterData) {
+            Character::create($characterData + [
+                'is_validated' => true,
+                'patch_version' => '7.0',
+            ]);
+        }
+
+        $this->seed(\Database\Seeders\TheorycraftSeeder::class);
+
+        $barbaraRecommendation = app(RecommendationEngine::class)
+            ->buildLocalRecommendation('barbara');
+
+        $this->assertNotNull($barbaraRecommendation);
+        $this->assertStringContainsString('Ocean-Hued Clam', $barbaraRecommendation);
+        $this->assertDatabaseHas('build_knowledge', [
+            'category' => 'artifact_priorities',
+            'source' => 'local-curated-unreferenced',
+            'embedding' => null,
+        ]);
+
+        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
+        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
+        $nvidia->shouldReceive('chat')
+            ->once()
+            ->andReturn([
+                'content' => 'Layanan AI sedang tidak tersedia.',
+                'status' => 'fallback',
+                'source' => 'local',
+                'fallback_reason' => 'CONNECTION_ERROR',
+            ]);
+
+        $this->app->instance(NvidiaService::class, $nvidia);
+        $buildResult = app(RecommendationEngine::class)->generateBuild('barbara');
+
+        $this->assertSame('local_knowledge', $buildResult['recommendation_source']);
+        $this->assertStringContainsString('Ocean-Hued Clam', $buildResult['ai_recommendation']);
+
+        $nahidaRecommendation = app(RecommendationEngine::class)
+            ->buildLocalRecommendation('nahida');
+
+        $this->assertStringContainsString('Deepwood Memories', $nahidaRecommendation);
+        $this->assertStringContainsString('A Thousand Floating Dreams', $nahidaRecommendation);
+
+        $xiaoRecommendation = app(RecommendationEngine::class)
+            ->buildLocalRecommendation('xiao');
+
+        $this->assertStringContainsString('Vermillion Hereafter', $xiaoRecommendation);
+        $this->assertStringContainsString('Primordial Jade Winged-Spear', $xiaoRecommendation);
+        $this->assertStringContainsString('Faruzan', $xiaoRecommendation);
+
+        $this->assertSame(
+            Character::count(),
+            Character::whereHas('buildKnowledge', fn ($query) => $query->where('category', 'artifact_priorities'))->count()
+        );
+
+        $unreviewedCharacterRecommendation = app(RecommendationEngine::class)
+            ->buildLocalRecommendation('xingqiu');
+
+        $this->assertStringContainsString('Belum ada rekomendasi artefak khusus yang terkurasi', $unreviewedCharacterRecommendation);
     }
 
     public function test_build_fallback_does_not_claim_to_recommend_without_local_guide(): void

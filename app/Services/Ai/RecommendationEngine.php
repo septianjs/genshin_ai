@@ -191,6 +191,23 @@ class RecommendationEngine
                     $contentMode
                 );
 
+        $teamCandidates = Character::query()
+            ->where('patch_version', $character->patch_version)
+            ->where('is_validated', true)
+            ->where('id', '!=', $character->id)
+            ->orderBy('name')
+            ->get([
+                'name',
+                'vision',
+                'weapon_type',
+            ])
+            ->map(fn (Character $candidate) => [
+                'name' => $candidate->name,
+                'vision' => $candidate->vision,
+                'weapon_type' => $candidate->weapon_type,
+            ])
+            ->all();
+
         $mechanicsData = [
             'resonances' =>
                 $resonances,
@@ -310,7 +327,8 @@ class RecommendationEngine
                 ->buildSystemPrompt(
                     $character,
                     $mechanicsData,
-                    $ragChunks
+                    $ragChunks,
+                    $teamCandidates
                 );
 
         $promptDuration =
@@ -408,6 +426,25 @@ class RecommendationEngine
                         ."Data build lokal khusus {$character->name} "
                         ."juga belum tersedia.";
                 }
+            }
+        }
+
+        if ($this->containsInternalReasoning((string) ($aiResponse['content'] ?? ''))) {
+            Log::warning('[BUILD] Model returned internal reasoning; replacing it with safe output.', [
+                'character' => $character->slug,
+            ]);
+
+            $aiResponse['status'] = 'fallback';
+            $aiResponse['fallback_reason'] = 'INTERNAL_REASONING_FILTERED';
+            $localRecommendation = $useLocalKnowledge
+                ? $this->buildLocalRecommendation($character->slug, $contentMode)
+                : null;
+
+            if ($localRecommendation !== null) {
+                $aiResponse['content'] = $localRecommendation;
+                $aiResponse['source'] = 'local';
+            } else {
+                $aiResponse['content'] = 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
             }
         }
 
@@ -571,6 +608,14 @@ class RecommendationEngine
      * LOCAL BUILD
      * ============================================================
      */
+    protected function containsInternalReasoning(string $content): bool
+    {
+        return preg_match(
+            '/here(?:\'|’)s\s+(?:a\s+)?thinking process\b|thinking process\s*:|internal reasoning\s*:|let me think|let me analyze|let\'s think step by step|analyze user input|check system\/context constraints|determine response strategy/iu',
+            $content
+        ) === 1;
+    }
+
     public function buildLocalRecommendation(
         string $characterSlug,
         string $contentMode = 'abyss'
@@ -626,7 +671,22 @@ class RecommendationEngine
         if (
             $knowledge->isEmpty()
         ) {
-            return null;
+            $overview = BuildKnowledge::query()
+                ->where('character_id', $character->id)
+                ->where('patch_version', $character->patch_version)
+                ->where('category', 'character_overview')
+                ->where('target_content', 'universal')
+                ->first();
+
+            if ($overview === null) {
+                return null;
+            }
+
+            return "# Build {$character->name}\n\n"
+                .'Panduan build terkurasi untuk karakter ini belum tersedia. '
+                .'Berikut profil karakter dari data lokal; rekomendasi artefak '
+                ."dan senjata tidak dibuat tanpa data yang mendukung.\n\n"
+                .$overview->content;
         }
 
         $categoryOrder = [

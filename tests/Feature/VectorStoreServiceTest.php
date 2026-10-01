@@ -61,9 +61,30 @@ class VectorStoreServiceTest extends TestCase
     public function test_context_prompt_distinguishes_entity_data_from_missing_build_knowledge(): void
     {
         $character = $this->createCharacter('diluc');
+        $character->forceFill([
+            'skill_data' => [
+                [
+                    'name' => 'Searing Onslaught',
+                    'unlock' => 'Elemental Skill',
+                    'description' => 'Performs a forward slash that deals Pyro DMG.',
+                    'upgrades' => [['name' => 'Skill DMG', 'value' => '94%']],
+                ],
+                [
+                    'name' => 'Dawn',
+                    'unlock' => 'Elemental Burst',
+                    'description' => 'Summons a Phoenix that deals Pyro DMG.',
+                ],
+            ],
+            'constellation_data' => [[
+                'name' => 'Conviction',
+                'level' => 1,
+                'description' => 'Deals more DMG to enemies above 50% HP.',
+            ]],
+        ])->save();
+
         $prompt = app(ContextBuilder::class)->buildSystemPrompt($character, [
             'constellation' => [
-                'constellation_level' => 0,
+                'constellation_level' => 1,
                 'gameplay_notes' => [],
             ],
             'content_profile' => [
@@ -75,9 +96,14 @@ class VectorStoreServiceTest extends TestCase
             'reactions' => ['stat_recommendations' => []],
         ]);
 
-        $this->assertStringContainsString('Tidak tersedia; entity data', $prompt);
+        $this->assertStringContainsString('Tidak tersedia; susun analisis build dari kit karakter', $prompt);
         $this->assertStringContainsString('Tidak ada knowledge RAG lokal', $prompt);
-        $this->assertStringContainsString('jangan membuat ranking', $prompt);
+        $this->assertStringContainsString('Searing Onslaught', $prompt);
+        $this->assertStringContainsString('Skill DMG 94%', $prompt);
+        $this->assertStringContainsString('Dawn', $prompt);
+        $this->assertStringContainsString('C1 Conviction', $prompt);
+        $this->assertStringContainsString('Jangan membuat ranking mutlak', $prompt);
+        $this->assertStringContainsString('Jangan hanya mengulang retrieved knowledge', $prompt);
         $this->assertStringContainsString('CLAYMORE', $prompt);
     }
 

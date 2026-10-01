@@ -841,10 +841,10 @@
 
                     <div class="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden bg-slate-900 border-2 border-teyvat-gold/50 shadow-xl flex-shrink-0">
 
-                        <template x-if="buildResult?.character?.icon_url">
+                        <template x-if="characterIconUrl(buildResult?.character)">
 
                             <img
-                                :src="buildResult.character.icon_url"
+                                :src="characterIconUrl(buildResult.character)"
                                 :alt="buildResult.character.name"
                                 class="w-full h-full object-cover"
                                 loading="lazy"
@@ -855,7 +855,7 @@
 
                         </template>
 
-                        <div data-character-fallback x-show="!buildResult?.character?.icon_url" class="absolute inset-0 p-2 flex items-center justify-center text-center text-xs text-slate-400">
+                        <div data-character-fallback x-show="!characterIconUrl(buildResult?.character)" class="absolute inset-0 p-2 flex items-center justify-center text-center text-xs text-slate-400">
                             Asset unavailable<br>
                             <span x-text="buildResult?.character?.name"></span>
                         </div>
@@ -994,15 +994,15 @@
             <div class="px-5 sm:px-6 pt-5">
                 <section class="rounded-2xl bg-slate-950/55 border border-slate-800 p-4 sm:p-5">
                     <h4 class="text-sm sm:text-base font-bold font-cinzel text-teyvat-gold mb-4">
-                        Anggota Tim Rekomendasi
+                        Karakter yang Dipilih untuk Analisis
                     </h4>
                     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
                         <template x-for="member in buildTeamMembers()" :key="member.slug">
                             <div class="rounded-xl bg-slate-900/80 border border-slate-800 p-2.5 text-center min-w-0">
                                 <div class="relative mx-auto w-full max-w-24 aspect-square rounded-lg overflow-hidden bg-slate-950 border border-slate-700">
-                                    <template x-if="member.icon_url">
+                                    <template x-if="characterIconUrl(member)">
                                         <img
-                                            :src="member.icon_url"
+                                            :src="characterIconUrl(member)"
                                             :alt="member.name"
                                             class="w-full h-full object-cover"
                                             loading="lazy"
@@ -1014,7 +1014,7 @@
                                     <div data-team-fallback class="hidden absolute inset-0 p-1 flex items-center justify-center text-center text-[9px] leading-tight text-slate-400">
                                         Asset unavailable
                                     </div>
-                                    <template x-if="!member.icon_url">
+                                    <template x-if="!characterIconUrl(member)">
                                         <div class="absolute inset-0 p-1 flex items-center justify-center text-center text-[9px] leading-tight text-slate-400">
                                             Asset unavailable
                                         </div>
@@ -1386,8 +1386,10 @@
                     this.sessionToken
                 );
 
-                this.loadEntityCatalogs();
-                await this.loadCharacters();
+                await Promise.all([
+                    this.loadEntityCatalogs(),
+                    this.loadCharacters()
+                ]);
 
                 await this.onCharacterChange();
 
@@ -1475,6 +1477,18 @@
                 });
             },
 
+            characterIconUrl(character) {
+                if (character?.icon_url) {
+                    return character.icon_url;
+                }
+
+                if (!this.genshinApiBase || !character?.slug) {
+                    return '';
+                }
+
+                return `${this.genshinApiBase}/characters/${encodeURIComponent(character.slug)}/icon-big`;
+            },
+
             entityAssetUrl(type, entity) {
                 if (!this.genshinApiBase || !entity?.id) {
                     return '';
@@ -1491,7 +1505,7 @@
             renderEntityAssetCard(entity, type) {
                 const name = this.escapeHtml(entity.name);
                 const imageUrl = type === 'character'
-                    ? entity.icon_url
+                    ? this.characterIconUrl(entity)
                     : this.entityAssetUrl(type, entity);
                 const rarity = type === 'character'
                     ? entity.rarity
@@ -1572,7 +1586,10 @@
 
                     if (json.success && json.data) {
 
-                        this.characters = json.data;
+                        this.characters = json.data.map(character => ({
+                            ...character,
+                            icon_url: this.characterIconUrl(character)
+                        }));
 
                         if (
                             this.characters.length > 0
