@@ -2,14 +2,16 @@
 
 namespace Tests\Feature;
 
-use App\Models\BuildKnowledge;
 use App\Models\Character;
-use App\Models\Conversation;
-use App\Models\Message;
 use App\Services\Ai\ChatbotService;
 use App\Services\Ai\RecommendationEngine;
 use App\Services\Nvidia\NvidiaService;
+use App\Services\Rag\ContextBuilder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
+use Mockery;
 use Tests\TestCase;
 
 class BuildRecommendationApiTest extends TestCase
@@ -20,15 +22,58 @@ class BuildRecommendationApiTest extends TestCase
     {
         parent::setUp();
 
+        Cache::store('file')->forget('build_weapon_catalog');
+        Cache::store('file')->forget('build_artifact_catalog');
+        Http::fake([
+            '*/weapons/all' => Http::response([
+                ['id' => 'favonius-sword', 'name' => 'Favonius Sword', 'type' => 'Sword', 'rarity' => 4, 'subStat' => 'Energy Recharge', 'passiveName' => 'Windfall', 'passiveDesc' => 'CRIT hits generate particles.'],
+                ['id' => 'freedom-sworn', 'name' => 'Freedom-Sworn', 'type' => 'Sword', 'rarity' => 5, 'subStat' => 'Elemental Mastery', 'passiveName' => 'Revolutionary Chorale', 'passiveDesc' => 'Increases damage and team attack.'],
+                ['id' => 'the-flute', 'name' => 'The Flute', 'type' => 'Sword', 'rarity' => 4, 'subStat' => 'ATK', 'passiveName' => 'Chord', 'passiveDesc' => 'Normal attacks grant harmonic stacks.'],
+                ['id' => 'lions-roar', 'name' => "Lion's Roar", 'type' => 'Sword', 'rarity' => 4, 'subStat' => 'ATK', 'passiveName' => 'Bane of Fire and Thunder', 'passiveDesc' => 'Increases damage against Pyro/Electro affected enemies.'],
+                ['id' => 'mappa-mare', 'name' => 'Mappa Mare', 'type' => 'Catalyst', 'rarity' => 4, 'subStat' => 'Elemental Mastery', 'passiveName' => 'Infusion Scroll', 'passiveDesc' => 'Triggers elemental reactions.'],
+                ['id' => 'the-widsith', 'name' => 'The Widsith', 'type' => 'Catalyst', 'rarity' => 4, 'subStat' => 'CRIT DMG', 'passiveName' => 'Debut', 'passiveDesc' => 'Grants a random song buff.'],
+                ['id' => 'sacrificial-fragments', 'name' => 'Sacrificial Fragments', 'type' => 'Catalyst', 'rarity' => 4, 'subStat' => 'Elemental Mastery', 'passiveName' => 'Composed', 'passiveDesc' => 'May reset Elemental Skill cooldown.'],
+                ['id' => 'lost-prayer', 'name' => 'Lost Prayer to the Sacred Winds', 'type' => 'Catalyst', 'rarity' => 5, 'subStat' => 'CRIT Rate', 'passiveName' => 'Boundless Blessing', 'passiveDesc' => 'Increases movement speed and Elemental DMG over time.'],
+                ['id' => 'staff-of-scarlet-sands', 'name' => 'Staff of the Scarlet Sands', 'type' => 'Polearm', 'rarity' => 5, 'subStat' => 'CRIT Rate', 'passiveName' => 'Heat Haze at Horizon\'s End', 'passiveDesc' => 'Gain ATK based on Elemental Mastery.'],
+                ['id' => 'deathmatch', 'name' => 'Deathmatch', 'type' => 'Polearm', 'rarity' => 4, 'subStat' => 'CRIT Rate', 'passiveName' => 'Gladiator', 'passiveDesc' => 'Increases ATK based on nearby opponents.'],
+                ['id' => 'dragons-bane', 'name' => "Dragon's Bane", 'type' => 'Polearm', 'rarity' => 4, 'subStat' => 'Elemental Mastery', 'passiveName' => 'Bane of Flame and Water', 'passiveDesc' => 'Increases DMG against Hydro/Pyro affected enemies.'],
+                ['id' => 'favonius-lance', 'name' => 'Favonius Lance', 'type' => 'Polearm', 'rarity' => 4, 'subStat' => 'Energy Recharge', 'passiveName' => 'Windfall', 'passiveDesc' => 'CRIT hits generate particles.'],
+                ['id' => 'amos-bow', 'name' => 'Amos Bow', 'type' => 'Bow', 'rarity' => 5, 'subStat' => 'ATK', 'passiveName' => 'Strong-Willed', 'passiveDesc' => 'Increases Normal Attack DMG.'],
+            ]),
+            '*/artifacts/all' => Http::response([
+                ['id' => 'noblesse-oblige', 'name' => 'Noblesse Oblige', 'max_rarity' => 5, '2-piece_bonus' => 'Elemental Burst DMG +20%', '4-piece_bonus' => "Using an Elemental Burst increases all party members' ATK by 20% for 12s."],
+                ['id' => 'thundering-fury', 'name' => 'Thundering Fury', 'max_rarity' => 5, '2-piece_bonus' => 'Gain a 15% Electro DMG Bonus.', '4-piece_bonus' => 'Increases damage caused by Overloaded, Electro-Charged, and Superconduct DMG by 40%.'],
+                ['id' => 'gladiators-finale', 'name' => "Gladiator's Finale", 'max_rarity' => 5, '2-piece_bonus' => 'ATK +18%', '4-piece_bonus' => 'Increases Normal Attack DMG.'],
+                ['id' => 'marechaussee-hunter', 'name' => 'Marechaussee Hunter', 'max_rarity' => 5, '2-piece_bonus' => 'Normal and Charged Attack DMG +15%', '4-piece_bonus' => 'CRIT Rate increases when HP changes.'],
+            ]),
+        ]);
+
         Character::create([
             'slug' => 'furina',
             'name' => 'Furina',
             'vision' => 'HYDRO',
             'weapon_type' => 'SWORD',
             'rarity' => 5,
+            'skill_data' => [[
+                'name' => 'Salon Solitaire',
+                'description' => 'Furina changes her Arkhe alignment and summons Salon Members.',
+            ]],
             'is_validated' => true,
             'patch_version' => '7.0',
         ]);
+
+        foreach ([
+            ['slug' => 'bennett', 'name' => 'Bennett', 'vision' => 'PYRO', 'weapon_type' => 'SWORD'],
+            ['slug' => 'kazuha', 'name' => 'Kaedehara Kazuha', 'vision' => 'ANEMO', 'weapon_type' => 'SWORD'],
+            ['slug' => 'xingqiu', 'name' => 'Xingqiu', 'vision' => 'HYDRO', 'weapon_type' => 'SWORD'],
+            ['slug' => 'zhongli', 'name' => 'Zhongli', 'vision' => 'GEO', 'weapon_type' => 'POLEARM'],
+        ] as $candidate) {
+            Character::create($candidate + [
+                'rarity' => 5,
+                'is_validated' => true,
+                'patch_version' => '7.0',
+            ]);
+        }
 
         Character::create([
             'slug' => 'albedo',
@@ -41,11 +86,10 @@ class BuildRecommendationApiTest extends TestCase
         ]);
     }
 
-    public function test_api_characters_list_returns_valid_json(): void
+    public function test_character_list_returns_valid_json(): void
     {
-        $response = $this->getJson('/api/characters');
-
-        $response->assertStatus(200)
+        $this->getJson('/api/characters')
+            ->assertOk()
             ->assertJsonStructure([
                 'success',
                 'total',
@@ -54,13 +98,12 @@ class BuildRecommendationApiTest extends TestCase
             ]);
     }
 
-    public function test_api_team_analyze_returns_resonances_and_reactions(): void
+    public function test_team_analysis_returns_resonances_and_reactions(): void
     {
-        $response = $this->postJson('/api/team/analyze', [
+        $this->postJson('/api/team/analyze', [
             'characters' => ['furina', 'albedo'],
-        ]);
-
-        $response->assertStatus(200)
+        ])
+            ->assertOk()
             ->assertJsonStructure([
                 'success',
                 'characters',
@@ -69,343 +112,243 @@ class BuildRecommendationApiTest extends TestCase
             ]);
     }
 
-    public function test_api_build_recommend_generates_recommendation(): void
+    public function test_build_prompt_uses_character_data_and_asks_ai_for_complete_experimental_build(): void
     {
-        $response = $this->postJson('/api/build/recommend', [
-            'character' => 'furina',
-            'constellation' => 0,
-            'team' => ['albedo'],
-            'content_mode' => 'abyss',
-        ]);
-
-        $response->assertStatus(200)
-            ->assertJsonStructure([
-                'success',
-                'data' => [
-                    'character',
-                    'mechanics',
-                    'ai_recommendation',
-                    'model',
-                ],
-            ]);
-    }
-
-    public function test_build_prompt_gives_ai_roster_candidates_and_requires_complete_recommendations(): void
-    {
-        Character::where('slug', 'furina')->update([
-            'skill_data' => [[
-                'name' => 'Salon Solitaire',
-                'description' => 'Furina changes her current Arkhe alignment and summons Salon Members.',
-            ]],
-        ]);
-
-        $vectorStore = \Mockery::mock(\App\Services\Rag\VectorStoreService::class);
-        $vectorStore->shouldReceive('searchSimilar')->once()->andReturn([]);
-        $this->app->instance(\App\Services\Rag\VectorStoreService::class, $vectorStore);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
+        $capturedPrompt = '';
+        $nvidia = Mockery::mock(NvidiaService::class);
         $nvidia->shouldReceive('chat')
             ->once()
-            ->withArgs(function (array $messages): bool {
-                $prompt = $messages[0]['content'] ?? '';
+            ->withArgs(function (array $messages) use (&$capturedPrompt): bool {
+                $capturedPrompt = $messages[0]['content'] ?? '';
 
-                return str_contains($prompt, 'ROSTER KARAKTER LOKAL')
-                    && str_contains($prompt, 'Albedo (GEO / SWORD)')
-                    && str_contains($prompt, 'Salon Solitaire')
-                    && str_contains($prompt, '**Artefak**')
-                    && str_contains($prompt, '**Senjata**')
-                    && str_contains($prompt, '**Tim yang Direkomendasikan**')
-                    && str_contains($prompt, '**Stat Prioritas**');
+                return true;
             })
             ->andReturn([
-                'content' => 'Rekomendasi build lengkap.',
+                'content' => $this->structuredBuildJson(
+                    ['favonius-sword', 'freedom-sworn', 'the-flute', 'lions-roar'],
+                    ['marechaussee-hunter', 'gladiators-finale', 'noblesse-oblige', 'thundering-fury']
+                ),
                 'status' => 'success',
                 'source' => 'nvidia',
             ]);
         $this->app->instance(NvidiaService::class, $nvidia);
 
-        $result = app(RecommendationEngine::class)->generateBuild('furina');
+        $result = app(RecommendationEngine::class)->generateBuild(
+            'furina',
+            customQuery: 'Coba build Furina sebagai DPS physical.',
+            preferredRole: 'DPS physical'
+        );
 
-        $this->assertSame('Rekomendasi build lengkap.', $result['ai_recommendation']);
+        $this->assertStringContainsString('Furina Build', $result['ai_recommendation']);
+        $this->assertStringContainsString('Salon Solitaire', $capturedPrompt);
+        $this->assertStringContainsString('Albedo (GEO / SWORD)', $capturedPrompt);
+        $this->assertStringContainsString('Favonius Sword', $capturedPrompt);
+        $this->assertStringContainsString('Struktur JSON wajib', $capturedPrompt);
+        $this->assertStringNotContainsString('Mappa Mare', $capturedPrompt);
+        $this->assertStringNotContainsString('Amos Bow', $capturedPrompt);
+        $this->assertStringNotContainsString('RETRIEVED THEORYCRAFT', $capturedPrompt);
+        $this->assertSame('nvidia', $result['recommendation_source']);
+        $this->assertCount(4, $result['recommendation_cards']['weapons']);
+        $this->assertCount(4, $result['recommendation_cards']['artifacts']);
+        $this->assertCount(4, $result['recommendation_cards']['teams']);
+        $this->assertSame('Favonius Sword', $result['recommendation_cards']['weapons'][0]['name']);
+        $this->assertNotEmpty($result['recommendation_cards']['weapons'][0]['image_id']);
+        $this->assertNotEmpty($result['recommendation_cards']['artifacts'][0]['four_piece_bonus']);
+        $this->assertSame('Albedo', $result['recommendation_cards']['teams'][0]['members'][1]['name']);
+        $this->assertFalse(Schema::hasTable('build_knowledge'));
+        $this->assertFalse(Schema::hasTable('genshin_artifacts'));
+        $this->assertFalse(Schema::hasTable('genshin_weapons'));
     }
 
-    public function test_api_build_recommend_can_skip_local_knowledge_when_requested(): void
+    public function test_cyno_prompt_only_contains_polearms_and_accurate_artifact_bonuses(): void
     {
-        $this->createDilucLocalKnowledge();
+        Character::create([
+            'slug' => 'cyno',
+            'name' => 'Cyno',
+            'vision' => 'ELECTRO',
+            'weapon_type' => 'POLEARM',
+            'rarity' => 5,
+            'skill_data' => [[
+                'name' => 'Sacred Rite: Wolf\'s Swiftness',
+                'unlock' => 'Elemental Burst',
+                'description' => 'Cyno enters the Pactsworn Pathclearer state, converting Normal, Charged, and Plunging Attack DMG to Electro DMG. This damage cannot be overridden.',
+                'upgrades' => [['name' => 'Pactsworn Pathclearer Normal Attack DMG', 'value' => 'x%']],
+            ]],
+            'is_validated' => true,
+            'patch_version' => '7.0',
+        ]);
 
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
-        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
+        $cyno = Character::where('slug', 'cyno')->firstOrFail();
+        $teamCandidates = Character::query()
+            ->where('is_validated', true)
+            ->where('slug', '!=', 'cyno')
+            ->get(['slug', 'name', 'vision', 'weapon_type', 'icon_url'])
+            ->map(fn (Character $candidate) => $candidate->toArray())
+            ->all();
+        $parser = new \ReflectionMethod(RecommendationEngine::class, 'parseBuildRecommendation');
+        $parser->setAccessible(true);
+        $parsed = $parser->invoke(
+            app(RecommendationEngine::class),
+            $this->structuredBuildJson(
+                ['staff-of-scarlet-sands', 'deathmatch', 'dragons-bane', 'favonius-lance'],
+                ['thundering-fury', 'gladiators-finale', 'noblesse-oblige', 'marechaussee-hunter']
+            ),
+            $cyno,
+            $teamCandidates,
+            [
+                ['id' => 'staff-of-scarlet-sands', 'name' => 'Staff of the Scarlet Sands', 'type' => 'Polearm'],
+                ['id' => 'deathmatch', 'name' => 'Deathmatch', 'type' => 'Polearm'],
+                ['id' => 'dragons-bane', 'name' => "Dragon's Bane", 'type' => 'Polearm'],
+                ['id' => 'favonius-lance', 'name' => 'Favonius Lance', 'type' => 'Polearm'],
+            ],
+            [
+                ['id' => 'thundering-fury', 'name' => 'Thundering Fury'],
+                ['id' => 'gladiators-finale', 'name' => "Gladiator's Finale"],
+                ['id' => 'noblesse-oblige', 'name' => 'Noblesse Oblige'],
+                ['id' => 'marechaussee-hunter', 'name' => 'Marechaussee Hunter'],
+            ]
+        );
+        $this->assertNotNull($parsed);
+
+        $nvidia = Mockery::mock(NvidiaService::class);
         $nvidia->shouldReceive('chat')
             ->once()
             ->andReturn([
-                'content' => 'Layanan AI sedang tidak tersedia.',
-                'status' => 'fallback',
-                'source' => 'local',
-                'fallback_reason' => 'CONNECTION_ERROR',
+                'content' => $this->structuredBuildJson(
+                    ['staff-of-scarlet-sands', 'deathmatch', 'dragons-bane', 'favonius-lance'],
+                    ['thundering-fury', 'gladiators-finale', 'noblesse-oblige', 'marechaussee-hunter']
+                ),
+                'status' => 'success',
+                'source' => 'nvidia',
             ]);
-
         $this->app->instance(NvidiaService::class, $nvidia);
 
-        $response = $this->postJson('/api/build/recommend', [
-            'character' => 'diluc',
-            'content_mode' => 'abyss',
-            'use_local_knowledge' => false,
-        ]);
+        $result = app(RecommendationEngine::class)->generateBuild(
+            'cyno',
+            preferredRole: 'Aggravate main DPS'
+        );
 
-        $response->assertStatus(200);
-        $this->assertStringContainsString('Layanan AI saat ini tidak tersedia', $response->json('data.ai_recommendation'));
-        $this->assertSame('ai_unavailable', $response->json('data.recommendation_source'));
-        $this->assertStringNotContainsString('# Build Diluc', $response->json('data.ai_recommendation'));
+        $this->assertStringContainsString('Cyno Build', $result['ai_recommendation']);
+        $this->assertSame('Staff of the Scarlet Sands', $result['recommendation_cards']['weapons'][0]['name']);
+        $this->assertSame('nvidia', $result['recommendation_source']);
+        $this->assertCount(4, $result['recommendation_cards']['weapons']);
+        $this->assertCount(4, $result['recommendation_cards']['artifacts']);
+        $this->assertCount(4, $result['recommendation_cards']['teams']);
+        $this->assertSame('Staff of the Scarlet Sands', $result['recommendation_cards']['weapons'][0]['name']);
     }
 
-    public function test_api_chat_send_stores_and_replies(): void
+    public function test_weapon_type_guard_detects_catalog_weapons_of_another_type(): void
     {
-        $response = $this->postJson('/api/chat/send', [
-            'session_token' => 'test_session_123',
-            'message' => 'Rekomendasi artefak untuk furina',
-            'character' => 'furina',
+        $engine = app(RecommendationEngine::class);
+        $guard = new \ReflectionMethod(RecommendationEngine::class, 'unsupportedWeaponNames');
+        $guard->setAccessible(true);
+
+        $invalid = $guard->invoke(
+            $engine,
+            'Try Mappa Mare and Hamayumi for Cyno.',
+            [
+                ['id' => 'staff-of-scarlet-sands', 'name' => 'Staff of the Scarlet Sands', 'type' => 'Polearm'],
+                ['id' => 'mappa-mare', 'name' => 'Mappa Mare', 'type' => 'Catalyst'],
+                ['id' => 'hamayumi', 'name' => 'Hamayumi', 'type' => 'Bow'],
+            ],
+            [
+                ['id' => 'staff-of-scarlet-sands', 'name' => 'Staff of the Scarlet Sands', 'type' => 'Polearm'],
+            ]
+        );
+
+        $this->assertSame(['Mappa Mare', 'Hamayumi'], $invalid);
+    }
+
+    public function test_barbara_prompt_distinguishes_healing_burst_from_noblesse_bonuses(): void
+    {
+        $barbara = Character::create([
+            'slug' => 'barbara',
+            'name' => 'Barbara',
+            'vision' => 'HYDRO',
+            'weapon_type' => 'CATALYST',
+            'rarity' => 4,
+            'skill_data' => [[
+                'name' => 'Shining Miracle',
+                'unlock' => 'Elemental Burst',
+                'description' => "Heals friendly forces and all parties for a large amount of HP that scales with Barbara's Max HP.",
+                'upgrades' => [['name' => 'Healing Amount', 'value' => '17.6% Max HP + 1694']],
+            ]],
+            'patch_version' => '7.0',
         ]);
 
-        $response->assertStatus(200)
-            ->assertJsonStructure([
-                'success',
-                'conversation_id',
-                'message' => [
-                    'id',
-                    'role',
-                    'content',
+        $prompt = app(ContextBuilder::class)->buildSystemPrompt(
+            $barbara,
+            [
+                'constellation' => [
+                    'constellation_level' => 0,
+                    'gameplay_notes' => [],
                 ],
-            ]);
+                'content_profile' => [
+                    'name' => 'Spiral Abyss',
+                    'description' => 'Combat challenge',
+                ],
+                'team' => [],
+            ],
+            [],
+            'main DPS',
+            [['name' => 'The Widsith', 'type' => 'Catalyst', 'rarity' => 4]],
+            [[
+                'name' => 'Noblesse Oblige',
+                'max_rarity' => 5,
+                '2-piece_bonus' => 'Elemental Burst DMG +20%',
+                '4-piece_bonus' => "Using an Elemental Burst increases all party members' ATK by 20% for 12s.",
+            ]]
+        );
+
+        $this->assertStringContainsString('Shining Miracle', $prompt);
+        $this->assertStringContainsString('Healing Amount 17.6% Max HP + 1694', $prompt);
+        $this->assertStringContainsString('jangan memilih bonus Burst DMG untuk damage pribadi bila Burst tidak memberi damage', $prompt);
+        $this->assertStringContainsString('Noblesse Oblige', $prompt);
+        $this->assertStringContainsString('all party members\' ATK by 20%', $prompt);
     }
 
-    public function test_build_recommendation_uses_local_knowledge_when_nvidia_is_unavailable(): void
+    public function test_build_endpoint_passes_experimental_role_to_ai_engine(): void
     {
-        $this->createDilucLocalKnowledge();
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
-        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
-        $nvidia->shouldReceive('chat')
+        $engine = Mockery::mock(RecommendationEngine::class);
+        $engine->shouldReceive('generateBuild')
             ->once()
+            ->withArgs(fn (...$arguments) => ($arguments[5] ?? null) === 'DPS physical')
             ->andReturn([
-                'content' => 'Sistem rekomendasi lokal digunakan.',
-                'status' => 'fallback',
-                'source' => 'local',
-                'fallback_reason' => 'CONNECTION_ERROR',
+                'character' => ['slug' => 'furina', 'name' => 'Furina'],
+                'ai_recommendation' => 'Furina DPS physical.',
             ]);
+        $this->app->instance(RecommendationEngine::class, $engine);
 
-        $this->app->instance(NvidiaService::class, $nvidia);
-        $result = app(RecommendationEngine::class)->generateBuild('diluc');
-
-        $this->assertSame('fallback', $result['status']);
-        $this->assertSame('local_knowledge', $result['recommendation_source']);
-        $this->assertStringContainsString('# Build Diluc', $result['ai_recommendation']);
-        $this->assertStringContainsString('Crimson Witch of Flames', $result['ai_recommendation']);
+        $this->postJson('/api/build/recommend', [
+            'character' => 'furina',
+            'preferred_role' => 'DPS physical',
+        ])
+            ->assertOk()
+            ->assertJsonPath('data.ai_recommendation', 'Furina DPS physical.');
     }
 
-    public function test_build_replaces_reasoning_leak_after_heading_with_local_guide(): void
+    public function test_ai_unavailable_does_not_substitute_a_local_build(): void
     {
-        $this->createDilucLocalKnowledge();
-
-        $vectorStore = \Mockery::mock(\App\Services\Rag\VectorStoreService::class);
-        $vectorStore->shouldReceive('searchSimilar')->once()->andReturn([]);
-        $this->app->instance(\App\Services\Rag\VectorStoreService::class, $vectorStore);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia = Mockery::mock(NvidiaService::class);
         $nvidia->shouldReceive('chat')->once()->andReturn([
-            'content' => "🧠\nAI Analysis\n\nHere's a thinking process:\n\n1. **Analyze User Input:** build diluc",
-            'status' => 'success',
-            'source' => 'nvidia',
+            'content' => 'Sistem rekomendasi lokal digunakan.',
+            'status' => 'fallback',
+            'source' => 'local',
+            'fallback_reason' => 'CONNECTION_ERROR',
         ]);
         $this->app->instance(NvidiaService::class, $nvidia);
 
-        $result = app(RecommendationEngine::class)->generateBuild('diluc');
-
-        $this->assertSame('fallback', $result['status']);
-        $this->assertSame('INTERNAL_REASONING_FILTERED', $result['fallback_reason']);
-        $this->assertSame('local_knowledge', $result['recommendation_source']);
-        $this->assertStringContainsString('# Build Diluc', $result['ai_recommendation']);
-        $this->assertStringNotContainsString('thinking process', $result['ai_recommendation']);
-        $this->assertStringNotContainsString('Analyze User Input', $result['ai_recommendation']);
-    }
-
-    public function test_local_build_guide_is_available_for_arlecchino(): void
-    {
-        $this->createArlecchinoLocalKnowledge();
-
-        $recommendation = app(RecommendationEngine::class)
-            ->buildLocalRecommendation('arlecchino');
-
-        $this->assertNotNull($recommendation);
-        $this->assertStringContainsString('# Build Arlecchino', $recommendation);
-        $this->assertStringContainsString('Fragment of Harmonic Whimsy', $recommendation);
-        $this->assertStringContainsString('Vaporize', $recommendation);
-        $this->assertStringContainsString('Normal Attack', $recommendation);
-    }
-
-    public function test_theorycraft_seeder_provides_barbara_build_and_local_profiles_without_nvidia(): void
-    {
-        foreach ([
-            ['slug' => 'barbara', 'name' => 'Barbara', 'vision' => 'Hydro', 'weapon_type' => 'Catalyst', 'rarity' => 4],
-            ['slug' => 'nahida', 'name' => 'Nahida', 'vision' => 'Dendro', 'weapon_type' => 'Catalyst', 'rarity' => 5],
-            ['slug' => 'xiao', 'name' => 'Xiao', 'vision' => 'Anemo', 'weapon_type' => 'Polearm', 'rarity' => 5],
-            ['slug' => 'xingqiu', 'name' => 'Xingqiu', 'vision' => 'Hydro', 'weapon_type' => 'Sword', 'rarity' => 4],
-        ] as $characterData) {
-            Character::create($characterData + [
-                'is_validated' => true,
-                'patch_version' => '7.0',
-            ]);
-        }
-
-        $this->seed(\Database\Seeders\TheorycraftSeeder::class);
-
-        $barbaraRecommendation = app(RecommendationEngine::class)
-            ->buildLocalRecommendation('barbara');
-
-        $this->assertNotNull($barbaraRecommendation);
-        $this->assertStringContainsString('Ocean-Hued Clam', $barbaraRecommendation);
-        $this->assertDatabaseHas('build_knowledge', [
-            'category' => 'artifact_priorities',
-            'source' => 'local-curated-unreferenced',
-            'embedding' => null,
-        ]);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('getEmbeddingModel')->once()->andReturn('test-embedding-model');
-        $nvidia->shouldReceive('generateEmbedding')->once()->andReturn(array_fill(0, 384, 0.1));
-        $nvidia->shouldReceive('chat')
-            ->once()
-            ->andReturn([
-                'content' => 'Layanan AI sedang tidak tersedia.',
-                'status' => 'fallback',
-                'source' => 'local',
-                'fallback_reason' => 'CONNECTION_ERROR',
-            ]);
-
-        $this->app->instance(NvidiaService::class, $nvidia);
-        $buildResult = app(RecommendationEngine::class)->generateBuild('barbara');
-
-        $this->assertSame('local_knowledge', $buildResult['recommendation_source']);
-        $this->assertStringContainsString('Ocean-Hued Clam', $buildResult['ai_recommendation']);
-
-        $nahidaRecommendation = app(RecommendationEngine::class)
-            ->buildLocalRecommendation('nahida');
-
-        $this->assertStringContainsString('Deepwood Memories', $nahidaRecommendation);
-        $this->assertStringContainsString('A Thousand Floating Dreams', $nahidaRecommendation);
-
-        $xiaoRecommendation = app(RecommendationEngine::class)
-            ->buildLocalRecommendation('xiao');
-
-        $this->assertStringContainsString('Vermillion Hereafter', $xiaoRecommendation);
-        $this->assertStringContainsString('Primordial Jade Winged-Spear', $xiaoRecommendation);
-        $this->assertStringContainsString('Faruzan', $xiaoRecommendation);
-
-        $this->assertSame(
-            Character::count(),
-            Character::whereHas('buildKnowledge', fn ($query) => $query->where('category', 'artifact_priorities'))->count()
+        $result = app(RecommendationEngine::class)->generateBuild(
+            'furina',
+            preferredRole: 'DPS physical'
         );
 
-        $unreviewedCharacterRecommendation = app(RecommendationEngine::class)
-            ->buildLocalRecommendation('xingqiu');
-
-        $this->assertStringContainsString('Belum ada rekomendasi artefak khusus yang terkurasi', $unreviewedCharacterRecommendation);
+        $this->assertSame('ai_unavailable', $result['recommendation_source']);
+        $this->assertStringContainsString('belum dapat dibuat', $result['ai_recommendation']);
+        $this->assertStringNotContainsString('Sistem rekomendasi lokal digunakan', $result['ai_recommendation']);
     }
 
-    public function test_build_fallback_does_not_claim_to_recommend_without_local_guide(): void
-    {
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chat')
-            ->once()
-            ->andReturn([
-                'content' => 'Sistem rekomendasi lokal digunakan.',
-                'status' => 'fallback',
-                'source' => 'local',
-                'fallback_reason' => 'CONNECTION_ERROR',
-            ]);
-
-        $this->app->instance(NvidiaService::class, $nvidia);
-        $result = app(RecommendationEngine::class)->generateBuild('furina');
-
-        $this->assertStringContainsString(
-            'Koneksi AI tidak tersedia dan panduan lokal untuk Furina belum tersedia.',
-            $result['ai_recommendation']
-        );
-        $this->assertStringNotContainsString('Rekomendasi tetap dibuat', $result['ai_recommendation']);
-    }
-
-    public function test_chat_uses_local_build_knowledge_when_nvidia_is_unavailable(): void
-    {
-        $this->createDilucLocalKnowledge();
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chat')
-            ->once()
-            ->andReturn([
-                'content' => 'Sistem rekomendasi lokal digunakan.',
-                'status' => 'fallback',
-                'source' => 'local',
-                'fallback_reason' => 'CONNECTION_ERROR',
-            ]);
-
-        $this->app->instance(NvidiaService::class, $nvidia);
-        $chatbot = app(ChatbotService::class);
-        $conversation = $chatbot->getOrCreateConversation('local_build_non_stream', 'diluc');
-
-        $result = $chatbot->handleMessage($conversation, 'build terbaik untuk diluc');
-
-        $this->assertSame('local_knowledge', $result['bot_message']->meta_payload['recommendation_source']);
-        $this->assertStringContainsString('# Build Diluc', $result['bot_message']->content);
-        $this->assertStringContainsString('Crimson Witch of Flames', $result['bot_message']->content);
-    }
-
-    public function test_chat_greeting_does_not_return_active_characters_local_build_on_fallback(): void
-    {
-        $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldNotReceive('generateBuild');
-        $recommendationEngine->shouldNotReceive('buildLocalRecommendation');
-        $this->app->instance(RecommendationEngine::class, $recommendationEngine);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldNotReceive('chat');
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $chatbot = app(ChatbotService::class);
-        $conversation = $chatbot->getOrCreateConversation('greeting_fallback', 'raiden');
-        $result = $chatbot->handleMessage($conversation, 'hai');
-
-        $this->assertStringStartsWith('Hai! 👋', $result['bot_message']->content);
-        $this->assertSame('GREETING', $result['bot_message']->meta_payload['intent']);
-        $this->assertNotSame('local_knowledge', $result['bot_message']->meta_payload['recommendation_source']);
-    }
-
-    public function test_chat_stream_http_endpoint_returns_greeting_without_calling_ai_or_build_pipeline(): void
-    {
-        $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldNotReceive('generateBuild');
-        $recommendationEngine->shouldNotReceive('buildLocalRecommendation');
-        $this->app->instance(RecommendationEngine::class, $recommendationEngine);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldNotReceive('chat');
-        $nvidia->shouldNotReceive('chatStream');
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $response = $this->post('/api/chat/stream', [
-            'session_token' => 'greeting_http_flow',
-            'message' => 'hai',
-            'character' => 'raiden',
-        ], ['Accept' => 'text/event-stream']);
-
-        $response->assertOk();
-        $content = $response->streamedContent();
-        $this->assertStringContainsString('type":"chunk"', $content);
-        $this->assertStringContainsString('Hai! 👋 Ada yang bisa saya bantu?', $content);
-        $this->assertStringContainsString('[DONE]', $content);
-    }
-
-    public function test_chat_stream_http_endpoint_keeps_build_requests_inside_chatbot_flow(): void
+    public function test_build_retries_internal_reasoning_and_returns_final_recommendation(): void
     {
         Character::create([
             'slug' => 'barbara',
@@ -416,510 +359,107 @@ class BuildRecommendationApiTest extends TestCase
             'patch_version' => '7.0',
         ]);
 
-        $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldNotReceive('generateBuild');
-        $this->app->instance(RecommendationEngine::class, $recommendationEngine);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chatStream')
-            ->once()
-            ->andReturn([
-                'content' => '# Build Barbara DPS',
-                'status' => 'success',
-                'source' => 'nvidia',
-                'model' => 'test-model',
-                'tokens_used' => 15,
-            ]);
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $response = $this->post('/api/chat/stream', [
-            'session_token' => 'barbara_build_http_flow',
-            'message' => 'hai, saya ingin build Barbara DPS',
-            'character' => 'furina',
-        ], ['Accept' => 'text/event-stream']);
-
-        $response->assertOk();
-        $content = $response->streamedContent();
-        $this->assertStringContainsString('# Build Barbara DPS', $content);
-        $this->assertStringNotContainsString('type":"build_result"', $content);
-        $this->assertStringNotContainsString('"slug":"barbara"', $content);
-        $this->assertStringContainsString('[DONE]', $content);
-    }
-
-    public function test_chat_send_http_endpoint_keeps_build_requests_inside_chatbot_flow(): void
-    {
-        Character::create([
-            'slug' => 'barbara',
-            'name' => 'Barbara',
-            'vision' => 'HYDRO',
-            'weapon_type' => 'CATALYST',
-            'rarity' => 4,
-            'patch_version' => '7.0',
-        ]);
-
-        $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldNotReceive('generateBuild');
-        $this->app->instance(RecommendationEngine::class, $recommendationEngine);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
+        $nvidia = Mockery::mock(NvidiaService::class);
         $nvidia->shouldReceive('chat')
-            ->once()
-            ->andReturn([
-                'content' => 'Jawaban chatbot untuk build Barbara tanpa memicu Generate Build.',
-                'status' => 'success',
-                'source' => 'nvidia',
-                'model' => 'test-model',
-                'tokens_used' => 15,
-            ]);
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $response = $this->postJson('/api/chat/send', [
-            'session_token' => 'barbara_build_json_flow',
-            'message' => 'build karakter Barbara DPS',
-            'character' => 'furina',
-        ]);
-
-        $response->assertOk()
-            ->assertJsonPath('message.content', 'Jawaban chatbot untuk build Barbara tanpa memicu Generate Build.')
-            ->assertJsonPath('message.meta_payload.intent', 'BUILD_RECOMMENDATION')
-            ->assertJsonPath('build_data', null);
-    }
-
-    public function test_build_follow_up_with_another_character_reuses_build_intent_in_chatbot_flow(): void
-    {
-        Character::create([
-            'slug' => 'barbara',
-            'name' => 'Barbara',
-            'vision' => 'HYDRO',
-            'weapon_type' => 'CATALYST',
-            'rarity' => 4,
-            'patch_version' => '7.0',
-        ]);
-
-        $conversation = Conversation::create([
-            'session_token' => 'followup_barbara',
-            'character_slug' => 'diluc',
-            'target_content' => 'abyss',
-            'patch_version' => '7.0',
-        ]);
-        Message::create([
-            'conversation_id' => $conversation->id,
-            'role' => 'assistant',
-            'content' => '# Build Diluc',
-        ]);
-
-        $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldNotReceive('generateBuild');
-        $this->app->instance(RecommendationEngine::class, $recommendationEngine);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chat')
-            ->once()
-            ->andReturn([
-                'content' => 'Chatbot follow-up untuk Barbara tanpa memicu Generate Build.',
-                'status' => 'success',
-                'source' => 'nvidia',
-                'model' => 'test-model',
-                'tokens_used' => 10,
-            ]);
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $response = $this->postJson('/api/chat/send', [
-            'session_token' => 'followup_barbara',
-            'message' => 'kalau barbara',
-            'character' => 'diluc',
-        ]);
-
-        $response->assertOk()
-            ->assertJsonPath('message.content', 'Chatbot follow-up untuk Barbara tanpa memicu Generate Build.')
-            ->assertJsonPath('message.meta_payload.intent', 'BUILD_RECOMMENDATION')
-            ->assertJsonPath('build_data', null);
-    }
-
-    public function test_chat_follow_up_clears_stale_active_team_before_new_character_context(): void
-    {
-        Character::create([
-            'slug' => 'barbara',
-            'name' => 'Barbara',
-            'vision' => 'HYDRO',
-            'weapon_type' => 'CATALYST',
-            'rarity' => 4,
-            'patch_version' => '7.0',
-        ]);
-
-        $conversation = Conversation::create([
-            'session_token' => 'stale_team_context',
-            'character_slug' => 'diluc',
-            'active_team' => ['albedo'],
-            'target_content' => 'abyss',
-            'patch_version' => '7.0',
-        ]);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chat')
-            ->once()
-            ->andReturn([
-                'content' => 'Tim lama tidak ikut dipakai karena konteks baru.',
-                'status' => 'success',
-                'source' => 'nvidia',
-                'model' => 'test-model',
-                'tokens_used' => 8,
-            ]);
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $result = app(ChatbotService::class)->handleMessage($conversation, 'mekanik barbara');
-
-        $this->assertStringContainsString('Tim lama tidak ikut dipakai', $result['bot_message']->content);
-        $this->assertSame('barbara', $conversation->fresh()->character_slug);
-        $this->assertSame([], $conversation->fresh()->active_team);
-    }
-
-    public function test_mechanics_question_uses_matching_local_knowledge_when_ai_is_unavailable(): void
-    {
-        $this->createDilucLocalKnowledge();
-        $diluc = Character::where('slug', 'diluc')->firstOrFail();
-        BuildKnowledge::create([
-            'character_id' => $diluc->id,
-            'category' => 'weapons_ranking',
-            'title' => 'Pilihan Senjata Diluc',
-            'content' => 'Beacon of the Reed Sea dan Wolf\'s Gravestone adalah opsi kuat.',
-            'target_content' => 'universal',
-            'patch_version' => '7.0',
-        ]);
-        BuildKnowledge::create([
-            'character_id' => $diluc->id,
-            'category' => 'role_and_reactions',
-            'title' => 'Mekanik dan reaksi Diluc',
-            'content' => 'Diluc adalah DPS on-field Pyro yang dapat memanfaatkan Vaporize.',
-            'target_content' => 'universal',
-            'patch_version' => '7.0',
-        ]);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chat')
-            ->once()
-            ->andReturn([
-                'content' => '',
-                'status' => 'fallback',
-                'source' => 'local',
-                'fallback_reason' => 'CONNECTION_ERROR',
-            ]);
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $conversation = app(ChatbotService::class)
-            ->getOrCreateConversation('diluc_mechanics_fallback', 'diluc');
-        $result = app(ChatbotService::class)->handleMessage($conversation, 'mekanik diluc');
-
-        $this->assertStringContainsString('Mekanik dan reaksi Diluc', $result['bot_message']->content);
-        $this->assertStringContainsString('Vaporize', $result['bot_message']->content);
-        $this->assertSame('MECHANICS_QUESTION', $result['bot_message']->meta_payload['intent']);
-        $this->assertSame('local_knowledge', $result['bot_message']->meta_payload['recommendation_source']);
-    }
-
-    public function test_artifact_stats_follow_up_uses_diluc_context_not_frontend_default_character(): void
-    {
-        $this->createDilucLocalKnowledge();
-        $diluc = Character::where('slug', 'diluc')->firstOrFail();
-        BuildKnowledge::create([
-            'character_id' => $diluc->id,
-            'category' => 'weapons_ranking',
-            'title' => 'Pilihan Senjata Diluc',
-            'content' => 'Beacon of the Reed Sea dan Wolf\'s Gravestone adalah opsi kuat.',
-            'target_content' => 'universal',
-            'patch_version' => '7.0',
-        ]);
-        BuildKnowledge::create([
-            'character_id' => $diluc->id,
-            'category' => 'artifact_priorities',
-            'title' => 'Stat artefak Diluc',
-            'content' => 'Prioritaskan CRIT Rate, CRIT DMG, ATK%, dan Elemental Mastery untuk tim Vaporize.',
-            'target_content' => 'universal',
-            'patch_version' => '7.0',
-        ]);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chatStream')
             ->twice()
-            ->andReturn([
-                'content' => '',
-                'status' => 'fallback',
-                'source' => 'local',
-                'fallback_reason' => 'CONNECTION_ERROR',
-            ]);
+            ->withArgs(function (array $messages, float $temperature, int $maxTokens): bool {
+                if ($maxTokens === 2000) {
+                    return str_contains($messages[0]['content'], 'OUTPUT CONTRACT')
+                        && str_contains($messages[1]['content'], 'finished recommendation');
+                }
+
+                return $maxTokens === 1000;
+            })
+            ->andReturn(
+                [
+                    'content' => 'Let me think through the build first.',
+                    'status' => 'success',
+                    'source' => 'nvidia',
+                ],
+                [
+                    'content' => $this->structuredBuildJson(
+                        ['lost-prayer', 'the-widsith', 'sacrificial-fragments', 'mappa-mare'],
+                        ['marechaussee-hunter', 'gladiators-finale', 'noblesse-oblige', 'thundering-fury']
+                    ),
+                    'status' => 'success',
+                    'source' => 'nvidia',
+                ]
+            );
         $this->app->instance(NvidiaService::class, $nvidia);
 
-        $firstResponse = $this->post('/api/chat/stream', [
-            'session_token' => 'diluc_artifact_followup',
-            'message' => 'senjata terbaik diluc',
-            'character' => 'furina',
-        ], ['Accept' => 'text/event-stream']);
-        $firstResponse->assertOk();
-        $this->assertStringContainsString(
-            'Pilihan Senjata Diluc',
-            $firstResponse->streamedContent()
+        $result = app(RecommendationEngine::class)->generateBuild(
+            'barbara',
+            customQuery: 'Build Barbara sebagai main DPS physical.',
+            preferredRole: 'main DPS physical'
         );
 
-        $secondResponse = $this->post('/api/chat/stream', [
-            'session_token' => 'diluc_artifact_followup',
-            'message' => 'kalau stats artefak nya, nyari apa',
-            'character' => 'furina',
-        ], ['Accept' => 'text/event-stream']);
-        $secondResponse->assertOk();
-        $secondContent = $secondResponse->streamedContent();
-
-        $this->assertStringContainsString('Stat artefak Diluc', $secondContent);
-        $this->assertStringContainsString('Elemental Mastery', $secondContent);
-        $this->assertStringNotContainsString('Build Furina', $secondContent);
-        $assistantMessage = Message::query()
-            ->where('conversation_id', Conversation::where('session_token', 'diluc_artifact_followup')->value('id'))
-            ->where('role', 'assistant')
-            ->latest('id')
-            ->firstOrFail();
-        $this->assertSame('diluc', $assistantMessage->meta_payload['character']);
-        $this->assertSame('ARTIFACT_QUESTION', $assistantMessage->meta_payload['intent']);
+        $this->assertSame('success', $result['status']);
+        $this->assertStringContainsString('Barbara Build', $result['ai_recommendation']);
+        $this->assertStringNotContainsString('Let me think', $result['ai_recommendation']);
     }
 
-    public function test_chat_lists_local_build_guides_without_calling_nvidia(): void
+    public function test_chat_build_request_passes_requested_role_to_ai_engine(): void
     {
-        $this->createDilucLocalKnowledge();
-        $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldNotReceive('generateBuild');
-        $this->app->instance(RecommendationEngine::class, $recommendationEngine);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldNotReceive('chat');
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $conversation = app(ChatbotService::class)->getOrCreateConversation(
-            'local_knowledge_inventory',
-            'furina'
-        );
-        $result = app(ChatbotService::class)->handleMessage(
-            $conversation,
-            'apa aja panduan lokal yang ada'
-        );
-
-        $this->assertStringContainsString('Panduan build lokal tersedia', $result['bot_message']->content);
-        $this->assertStringContainsString('- Diluc', $result['bot_message']->content);
-        $this->assertStringNotContainsString('- Furina', $result['bot_message']->content);
-        $this->assertSame('KNOWLEDGE_STATUS', $result['bot_message']->meta_payload['intent']);
-    }
-
-    public function test_chat_stream_uses_local_build_knowledge_when_nvidia_is_unavailable(): void
-    {
-        $this->createDilucLocalKnowledge();
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chatStream')
+        $engine = Mockery::mock(RecommendationEngine::class);
+        $engine->shouldReceive('generateBuild')
             ->once()
+            ->withArgs(fn (...$arguments) => ($arguments[5] ?? null) === 'dps')
             ->andReturn([
-                'content' => 'Sistem rekomendasi lokal digunakan.',
-                'status' => 'fallback',
-                'source' => 'local',
-                'fallback_reason' => 'CONNECTION_ERROR',
-            ]);
-
-        $this->app->instance(NvidiaService::class, $nvidia);
-        $chatbot = app(ChatbotService::class);
-        $conversation = $chatbot->getOrCreateConversation('local_build_stream', 'diluc');
-        $deliveredContent = '';
-
-        $result = $chatbot->streamMessage(
-            $conversation,
-            'build terbaik untuk diluc',
-            static function (string $content) use (&$deliveredContent): void {
-                $deliveredContent .= $content;
-            }
-        );
-
-        $this->assertSame($result['bot_message']->content, $deliveredContent);
-        $this->assertStringContainsString('# Build Diluc', $deliveredContent);
-        $this->assertStringContainsString('Crimson Witch of Flames', $deliveredContent);
-    }
-
-    public function test_chat_stream_greeting_does_not_return_active_characters_local_build_on_fallback(): void
-    {
-        $recommendationEngine = \Mockery::mock(RecommendationEngine::class);
-        $recommendationEngine->shouldNotReceive('generateBuild');
-        $recommendationEngine->shouldNotReceive('buildLocalRecommendation');
-        $this->app->instance(RecommendationEngine::class, $recommendationEngine);
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldNotReceive('chatStream');
-        $this->app->instance(NvidiaService::class, $nvidia);
-
-        $chatbot = app(ChatbotService::class);
-        $conversation = $chatbot->getOrCreateConversation('greeting_stream_fallback', 'raiden');
-        $deliveredContent = '';
-
-        $result = $chatbot->streamMessage(
-            $conversation,
-            'hai',
-            static function (string $content) use (&$deliveredContent): void {
-                $deliveredContent .= $content;
-            }
-        );
-
-        $this->assertStringStartsWith('Hai! 👋', $deliveredContent);
-        $this->assertSame('GREETING', $result['bot_message']->meta_payload['intent']);
-        $this->assertSame($deliveredContent, $result['bot_message']->content);
-        $this->assertNotSame('local_knowledge', $result['bot_message']->meta_payload['recommendation_source']);
-    }
-
-    public function test_chat_stream_uses_local_guide_instead_of_internal_reasoning(): void
-    {
-        $this->createDilucLocalKnowledge();
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chatStream')
-            ->once()
-            ->andReturn([
-                'content' => "Here's a thinking process:\n\n1. **Analyze User Input:** build diluc",
+                'character' => ['slug' => 'furina', 'name' => 'Furina'],
+                'ai_recommendation' => 'Rekomendasi eksperimen DPS Furina.',
                 'status' => 'success',
+                'recommendation_source' => 'nvidia',
             ]);
+        $this->app->instance(RecommendationEngine::class, $engine);
 
-        $this->app->instance(NvidiaService::class, $nvidia);
         $chatbot = app(ChatbotService::class);
-        $conversation = $chatbot->getOrCreateConversation('reasoning_stream_test', 'diluc');
-        $deliveredContent = '';
+        $conversation = $chatbot->getOrCreateConversation('experimental_chat_role');
+        $result = $chatbot->handleMessage($conversation, 'build furina sebagai dps');
 
-        $result = $chatbot->streamMessage(
-            $conversation,
-            'build diluc',
-            static function (string $content) use (&$deliveredContent): void {
-                $deliveredContent .= $content;
-            }
-        );
-
-        $this->assertStringContainsString('# Build Diluc', $deliveredContent);
-        $this->assertSame($deliveredContent, $result['bot_message']->content);
-        $this->assertSame('local_knowledge', $result['bot_message']->meta_payload['recommendation_source']);
-        $this->assertStringNotContainsString('thinking process', $result['bot_message']->content);
-    }
-
-    public function test_non_stream_chat_uses_local_guide_instead_of_internal_reasoning(): void
-    {
-        $this->createDilucLocalKnowledge();
-
-        $nvidia = \Mockery::mock(NvidiaService::class);
-        $nvidia->shouldReceive('chat')
-            ->once()
-            ->andReturn([
-                'content' => "Here's a thinking process:\n\n1. **Analyze User Input:** build diluc",
-                'status' => 'success',
-            ]);
-
-        $this->app->instance(NvidiaService::class, $nvidia);
-        $chatbot = app(ChatbotService::class);
-        $conversation = $chatbot->getOrCreateConversation('reasoning_non_stream_test', 'diluc');
-
-        $result = $chatbot->handleMessage($conversation, 'build diluc');
-
-        $this->assertStringContainsString('# Build Diluc', $result['bot_message']->content);
-        $this->assertSame('local_knowledge', $result['bot_message']->meta_payload['recommendation_source']);
-        $this->assertStringNotContainsString(
-            'thinking process',
-            $result['bot_message']->content
-        );
+        $this->assertSame('Rekomendasi eksperimen DPS Furina.', $result['bot_message']->content);
     }
 
     public function test_web_home_page_loads_successfully(): void
     {
-        $response = $this->get('/');
-        $response->assertStatus(200);
-        $response->assertSee('GENSHIN BUILD AI');
+        $this->get('/')
+            ->assertOk()
+            ->assertSee('GENSHIN BUILD AI');
     }
 
-    private function createDilucLocalKnowledge(): void
+    private function structuredBuildJson(array $weaponIds, array $artifactIds): string
     {
-        $diluc = Character::create([
-            'slug' => 'diluc',
-            'name' => 'Diluc',
-            'vision' => 'PYRO',
-            'weapon_type' => 'CLAYMORE',
-            'rarity' => 5,
-            'is_validated' => true,
-            'patch_version' => '7.0',
-        ]);
-
-        BuildKnowledge::create([
-            'character_id' => $diluc->id,
-            'category' => 'artifact_priorities',
-            'title' => 'Artefak Diluc',
-            'content' => 'Gunakan 4-piece Crimson Witch of Flames.',
-            'target_content' => 'universal',
-            'patch_version' => '7.0',
-        ]);
-    }
-
-    private function buildResponseFixture(string $name): array
-    {
-        return [
-            'character' => [
-                'slug' => strtolower($name),
-                'name' => $name,
-                'vision' => 'HYDRO',
-                'weapon_type' => 'CATALYST',
-                'rarity' => 4,
-                'constellation' => 0,
-            ],
-            'teammates' => [],
-            'mechanics' => [],
-            'ai_recommendation' => "{$name} DPS recommendation",
-            'model' => 'test-model',
-            'status' => 'success',
-            'source' => 'nvidia',
-            'recommendation_source' => 'nvidia',
-            'tokens_used' => 15,
+        $teamSlugs = [
+            ['albedo', 'bennett', 'kazuha'],
+            ['xingqiu', 'bennett', 'zhongli'],
+            ['albedo', 'xingqiu', 'kazuha'],
+            ['bennett', 'kazuha', 'zhongli'],
         ];
-    }
 
-    private function createArlecchinoLocalKnowledge(): void
-    {
-        $arlecchino = Character::create([
-            'slug' => 'arlecchino',
-            'name' => 'Arlecchino',
-            'vision' => 'PYRO',
-            'weapon_type' => 'POLEARM',
-            'rarity' => 5,
-            'is_validated' => true,
-            'patch_version' => '7.0',
-        ]);
-
-        BuildKnowledge::create([
-            'character_id' => $arlecchino->id,
-            'category' => 'artifact_priorities',
-            'title' => 'Artefak Arlecchino',
-            'content' => 'Gunakan 4-piece Fragment of Harmonic Whimsy.',
-            'target_content' => 'universal',
-            'patch_version' => '7.0',
-        ]);
-
-        BuildKnowledge::create([
-            'character_id' => $arlecchino->id,
-            'category' => 'team_synergies',
-            'title' => 'Tim Arlecchino',
-            'content' => 'Tim Vaporize menggunakan Xingqiu.',
-            'target_content' => 'abyss',
-            'patch_version' => '7.0',
-        ]);
-
-        BuildKnowledge::create([
-            'character_id' => $arlecchino->id,
-            'category' => 'rotation',
-            'title' => 'Rotasi Arlecchino',
-            'content' => 'Lanjutkan dengan Normal Attack.',
-            'target_content' => 'abyss',
-            'patch_version' => '7.0',
-        ]);
-
-        BuildKnowledge::create([
-            'character_id' => $arlecchino->id,
-            'category' => 'role_and_reactions',
-            'title' => 'Peran Arlecchino',
-            'content' => 'Arlecchino memicu Vaporize.',
-            'target_content' => 'universal',
-            'patch_version' => '7.0',
-        ]);
+        return json_encode([
+            'role_analysis' => 'Main DPS on-field berdasarkan damage serangan dan scaling kit.',
+            'artifacts' => array_map(fn (string $artifactId, int $index) => [
+                'rank' => $index + 1,
+                'id' => $artifactId,
+                'main_stats' => [
+                    'sands' => 'ATK%',
+                    'goblet' => 'Elemental DMG',
+                    'circlet' => 'CRIT',
+                ],
+                'substats' => ['CRIT Rate', 'CRIT DMG', 'ATK%'],
+                'reason' => 'Set ini mendukung damage karakter.',
+            ], $artifactIds, array_keys($artifactIds)),
+            'weapons' => array_map(fn (string $weaponId, int $index) => [
+                'rank' => $index + 1,
+                'id' => $weaponId,
+                'reason' => 'Stat senjata mendukung role karakter.',
+            ], $weaponIds, array_keys($weaponIds)),
+            'teams' => array_map(fn (array $slugs, int $index) => [
+                'rank' => $index + 1,
+                'teammate_slugs' => $slugs,
+                'reason' => 'Komposisi mendukung damage dan rotasi.',
+            ], $teamSlugs, array_keys($teamSlugs)),
+            'stat_priorities' => ['CRIT Rate', 'CRIT DMG', 'ATK%'],
+            'rotation' => ['Gunakan support', 'Aktifkan skill karakter utama', 'Lakukan serangan on-field'],
+        ], JSON_THROW_ON_ERROR);
     }
 }

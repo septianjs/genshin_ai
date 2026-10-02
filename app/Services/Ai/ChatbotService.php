@@ -2,7 +2,6 @@
 
 namespace App\Services\Ai;
 
-use App\Models\BuildKnowledge;
 use App\Models\Character;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -97,14 +96,6 @@ class ChatbotService
             );
         }
 
-        if ($intent === IntentClassifier::INTENT_KNOWLEDGE_STATUS) {
-            return $this->respondWithLocalKnowledgeStatus(
-                $conversation,
-                $userMessage,
-                false
-            );
-        }
-
         /*
          * ========================================================
          * BUILD HARUS MASUK KE RECOMMENDATION ENGINE
@@ -146,38 +137,16 @@ class ChatbotService
             )
         );
 
-        $localKnowledgeReply = null;
-
         if (
             ($aiResponse['status'] ?? null) === 'fallback'
         ) {
-            $localKnowledgeReply =
-                $this->localKnowledgeFallback(
-                    $intent,
-                    $context['target_character'],
-                    $context['content_mode']
-                );
-
-            $replyContent =
-                $localKnowledgeReply
-                ?? $this->buildChatUnavailableMessage(
-                    $context
-                );
+            $replyContent = $this->buildChatUnavailableMessage($context);
         } elseif (
             $this->containsInternalReasoning(
                 $replyContent
             )
         ) {
-            $localKnowledgeReply =
-                $this->localKnowledgeFallback(
-                    $intent,
-                    $context['target_character'],
-                    $context['content_mode']
-                );
-
-            $replyContent =
-                $localKnowledgeReply
-                ?? 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
+            $replyContent = 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
         }
 
         $replyContent =
@@ -210,9 +179,7 @@ class ChatbotService
                 $aiResponse['fallback_reason'] ?? null,
 
             'recommendation_source' =>
-                $localKnowledgeReply !== null
-                    ? 'local_knowledge'
-                    : ($aiResponse['source'] ?? null),
+                $aiResponse['source'] ?? null,
 
             'intent' =>
                 $intent,
@@ -221,9 +188,6 @@ class ChatbotService
                 'lightweight',
 
             'streaming' =>
-                false,
-
-            'rag_used' =>
                 false,
 
             'request_seconds' =>
@@ -350,7 +314,7 @@ class ChatbotService
 
                 $userMessageText,
 
-                true
+                $context['extracted']['role'] ?? null
             );
 
         /*
@@ -455,13 +419,9 @@ class ChatbotService
                     $buildResult['fallback_reason']
                     ?? null,
 
-                'knowledge_available' =>
-                    $buildResult['knowledge_available']
-                    ?? false,
-
-                'knowledge_categories' =>
-                    $buildResult['knowledge_categories']
-                    ?? [],
+                'recommendation_cards' =>
+                    $buildResult['recommendation_cards']
+                    ?? null,
 
                 'chat_mode' =>
                     'build',
@@ -533,23 +493,11 @@ class ChatbotService
             );
         }
 
-        if (
-            $intent ===
-            IntentClassifier::INTENT_KNOWLEDGE_STATUS
-        ) {
-            return $this->respondWithLocalKnowledgeStatus(
-                $conversation,
-                $userMessage,
-                true,
-                $onToken
-            );
-        }
-
         /*
          * BUILD pada streaming tetap menggunakan pipeline build.
          *
          * GenerateBuild memang non-streaming karena hasilnya
-         * membutuhkan mechanics + RAG + NVIDIA.
+         * membutuhkan data karakter, mechanics, dan NVIDIA.
          */
         if (
             $intent ===
@@ -645,40 +593,17 @@ class ChatbotService
         $generatedReply =
             trim($generatedReply);
 
-        $localKnowledgeReply =
-            null;
-
         if (
             ($aiResponse['status'] ?? null)
             === 'fallback'
         ) {
-            $localKnowledgeReply =
-                $this->localKnowledgeFallback(
-                    $intent,
-                    $context['target_character'],
-                    $context['content_mode']
-                );
-
-            $generatedReply =
-                $localKnowledgeReply
-                ?? $this->buildChatUnavailableMessage(
-                    $context
-                );
+            $generatedReply = $this->buildChatUnavailableMessage($context);
         } elseif (
             $this->containsInternalReasoning(
                 $generatedReply
             )
         ) {
-            $localKnowledgeReply =
-                $this->localKnowledgeFallback(
-                    $intent,
-                    $context['target_character'],
-                    $context['content_mode']
-                );
-
-            $generatedReply =
-                $localKnowledgeReply
-                ?? 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
+            $generatedReply = 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
         }
 
         $fullReply =
@@ -713,9 +638,7 @@ class ChatbotService
                 $aiResponse['fallback_reason'] ?? null,
 
             'recommendation_source' =>
-                $localKnowledgeReply !== null
-                    ? 'local_knowledge'
-                    : ($aiResponse['source'] ?? null),
+                $aiResponse['source'] ?? null,
 
             'intent' =>
                 $intent,
@@ -965,117 +888,6 @@ class ChatbotService
         )
             ? IntentClassifier::INTENT_BUILD
             : $intent;
-    }
-
-    /**
-     * ============================================================
-     * LOCAL FALLBACK
-     * ============================================================
-     */
-    protected function localKnowledgeFallback(
-        string $intent,
-        ?string $characterSlug,
-        string $contentMode
-    ): ?string {
-        if (
-            empty($characterSlug)
-        ) {
-            return null;
-        }
-
-        $categories =
-            match ($intent) {
-                IntentClassifier::INTENT_WEAPON_QUESTION,
-                IntentClassifier::INTENT_WEAPON_COMPARE =>
-                    ['weapons_ranking'],
-
-                IntentClassifier::INTENT_ARTIFACT_QUESTION =>
-                    ['artifact_priorities'],
-
-                IntentClassifier::INTENT_TEAM_SYNERGY =>
-                    ['team_synergies'],
-
-                IntentClassifier::INTENT_ROTATION =>
-                    ['rotation'],
-
-                IntentClassifier::INTENT_MECHANICS =>
-                    ['role_and_reactions'],
-
-                IntentClassifier::INTENT_REACTION =>
-                    ['role_and_reactions'],
-
-                IntentClassifier::INTENT_CHARACTER_QUESTION =>
-                    ['character_overview'],
-
-                default =>
-                    null,
-            };
-
-        if (
-            $categories === null
-            || $categories === []
-        ) {
-            return null;
-        }
-
-        $character =
-            Character::query()
-                ->where(
-                    'slug',
-                    $characterSlug
-                )
-                ->first();
-
-        if (
-            $character === null
-        ) {
-            return null;
-        }
-
-        $knowledge =
-            BuildKnowledge::query()
-                ->where(
-                    'character_id',
-                    $character->id
-                )
-                ->where(
-                    'patch_version',
-                    $character->patch_version
-                )
-                ->whereIn(
-                    'category',
-                    $categories
-                )
-                ->where(
-                    function ($query)
-                    use ($contentMode) {
-                        $query
-                            ->where(
-                                'target_content',
-                                $contentMode
-                            )
-                            ->orWhere(
-                                'target_content',
-                                'universal'
-                            );
-                    }
-                )
-                ->orderByRaw(
-                    'CASE WHEN target_content = ? THEN 0 ELSE 1 END',
-                    [$contentMode]
-                )
-                ->orderByDesc('id')
-                ->first();
-
-        if (
-            $knowledge === null
-        ) {
-            return null;
-        }
-
-        return
-            "## {$knowledge->title}\n"
-            .$knowledge->content;
     }
 
     /**
@@ -1389,7 +1201,7 @@ PROMPT;
         ) {
             return
                 "Maaf, layanan AI sedang tidak tersedia untuk sementara. "
-                ."Tidak ada panduan lokal yang cukup untuk menjawab pertanyaan {$character}.";
+                ."Belum ada jawaban AI untuk pertanyaan {$character}.";
         }
 
         return
@@ -1460,117 +1272,6 @@ PROMPT;
 
                 'source' =>
                     'local',
-            ],
-
-            'build_data' =>
-                null,
-        ];
-    }
-
-    /**
-     * ============================================================
-     * KNOWLEDGE STATUS
-     * ============================================================
-     */
-    protected function respondWithLocalKnowledgeStatus(
-        Conversation $conversation,
-        Message $userMessage,
-        bool $streaming,
-        ?callable $onToken = null
-    ): array {
-        $patch =
-            (string)
-            config(
-                'services.genshin.target_patch',
-                '7.0'
-            );
-
-        $characterNames =
-            Character::query()
-                ->whereHas(
-                    'buildKnowledge',
-                    function ($query)
-                    use ($patch) {
-                        $query
-                            ->where(
-                                'patch_version',
-                                $patch
-                            )
-                            ->where(
-                                'category',
-                                '!=',
-                                'character_overview'
-                            );
-                    }
-                )
-                ->orderBy('name')
-                ->pluck('name')
-                ->unique()
-                ->values();
-
-        $reply =
-            $characterNames->isEmpty()
-                ? "Belum ada panduan build lokal untuk patch {$patch}."
-                : "Panduan build lokal tersedia untuk patch {$patch}:\n"
-                    .$characterNames
-                        ->map(
-                            fn (
-                                string $name
-                            ) =>
-                                "- {$name}"
-                        )
-                        ->implode("\n");
-
-        if (
-            $onToken !== null
-        ) {
-            $onToken($reply);
-        }
-
-        $botMessage = Message::create([
-            'conversation_id' =>
-                $conversation->id,
-
-            'role' =>
-                'assistant',
-
-            'content' =>
-                $reply,
-
-            'meta_payload' => [
-                'intent' =>
-                    IntentClassifier::INTENT_KNOWLEDGE_STATUS,
-
-                'recommendation_source' =>
-                    'local_knowledge',
-
-                'chat_mode' =>
-                    'knowledge_status',
-
-                'streaming' =>
-                    $streaming,
-
-                'patch_version' =>
-                    $patch,
-            ],
-        ]);
-
-        return [
-            'user_message' =>
-                $userMessage,
-
-            'bot_message' =>
-                $botMessage,
-
-            'ai_response' => [
-                'content' =>
-                    $reply,
-
-                'status' =>
-                    'success',
-
-                'source' =>
-                    'local_knowledge',
             ],
 
             'build_data' =>

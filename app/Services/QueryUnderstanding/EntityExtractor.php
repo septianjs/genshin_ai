@@ -42,6 +42,14 @@ class EntityExtractor
             $constellation = (int) $matches[1];
         } elseif (
             preg_match(
+                '/\b[cC]\s*([0-6])\b/u',
+                $query,
+                $matches
+            )
+        ) {
+            $constellation = (int) $matches[1];
+        } elseif (
+            preg_match(
                 '/\b(?:konstelasi|constellation)\s*([0-6])\b/iu',
                 $query,
                 $matches

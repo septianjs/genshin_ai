@@ -60,4 +60,63 @@ class ThirdPartyGenshinClient
             return null;
         }
     }
+
+    /**
+     * @return array<array<string, mixed>>
+     */
+    public function getWeaponCatalog(): array
+    {
+        return $this->getItemCatalog('weapons');
+    }
+
+    /**
+     * @return array<array<string, mixed>>
+     */
+    public function getArtifactCatalog(): array
+    {
+        return $this->getItemCatalog('artifacts');
+    }
+
+    /**
+     * @return array<array<string, mixed>>
+     */
+    protected function getItemCatalog(string $entity): array
+    {
+        try {
+            $response = Http::connectTimeout(5)
+                ->timeout(12)
+                ->acceptJson()
+                ->get("{$this->baseUrl}/{$entity}/all");
+
+            if (! $response->successful()) {
+                Log::warning("ThirdPartyGenshinClient: Gagal mengambil katalog {$entity}.", [
+                    'status' => $response->status(),
+                ]);
+
+                return [];
+            }
+
+            $data = $response->json();
+
+            if (! is_array($data)) {
+                return [];
+            }
+
+            if (isset($data['data']) && is_array($data['data'])) {
+                $data = $data['data'];
+            }
+
+            return array_values(array_filter(
+                $data,
+                fn ($item): bool => is_array($item)
+                    && ! empty($item['name'])
+            ));
+        } catch (\Throwable $e) {
+            Log::warning("ThirdPartyGenshinClient: Katalog {$entity} tidak dapat diakses.", [
+                'exception' => get_class($e),
+            ]);
+
+            return [];
+        }
+    }
 }

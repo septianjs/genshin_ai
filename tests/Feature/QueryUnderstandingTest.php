@@ -27,6 +27,18 @@ class QueryUnderstandingTest extends TestCase
 
     public function test_entity_extractor_parses_constellation_and_content_mode(): void
     {
+        foreach ([
+            ['slug' => 'raiden', 'name' => 'Raiden Shogun', 'vision' => 'ELECTRO', 'weapon_type' => 'POLEARM'],
+            ['slug' => 'sara', 'name' => 'Kujou Sara', 'vision' => 'ELECTRO', 'weapon_type' => 'BOW'],
+            ['slug' => 'bennett', 'name' => 'Bennett', 'vision' => 'PYRO', 'weapon_type' => 'SWORD'],
+            ['slug' => 'kazuha', 'name' => 'Kaedehara Kazuha', 'vision' => 'ANEMO', 'weapon_type' => 'SWORD'],
+        ] as $character) {
+            Character::create($character + [
+                'rarity' => 5,
+                'patch_version' => '7.0',
+            ]);
+        }
+
         $extractor = app(EntityExtractor::class);
 
         $query = 'tolong build ei c2 buat abyss lantai 12 tim sara bennett kazuha';
@@ -58,7 +70,7 @@ class QueryUnderstandingTest extends TestCase
         $this->assertEquals(IntentClassifier::INTENT_WEAPON_QUESTION, $classifier->classify('senjata Diluc'));
         $this->assertEquals(IntentClassifier::INTENT_WEAPON_QUESTION, $classifier->classify('stats senjata Diluc'));
         $this->assertEquals(IntentClassifier::INTENT_REACTION, $classifier->classify('apa itu Overload?'));
-        $this->assertEquals(IntentClassifier::INTENT_KNOWLEDGE_STATUS, $classifier->classify('apa aja panduan lokal yang ada'));
+        $this->assertEquals(IntentClassifier::INTENT_GENERAL, $classifier->classify('apa aja panduan lokal yang ada'));
         $this->assertEquals(IntentClassifier::INTENT_WEAPON_QUESTION, $classifier->classify('hai, senjata Barbara apa?'));
         $this->assertEquals(IntentClassifier::INTENT_ARTIFACT_QUESTION, $classifier->classify('kalau stats artefak nya, nyari apa'));
         $this->assertEquals(IntentClassifier::INTENT_TEAM_SYNERGY, $classifier->classify('hai, Barbara cocok dengan siapa?'));

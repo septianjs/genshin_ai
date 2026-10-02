@@ -14,15 +14,11 @@ class NvidiaService
 
     protected string $model;
 
-    protected string $embeddingModel;
-
     protected int $timeout;
 
     protected int $connectTimeout;
 
     protected int $streamTimeout;
-
-    protected int $embeddingTimeout;
 
     public function __construct()
     {
@@ -41,16 +37,10 @@ class NvidiaService
             'nvidia/nemotron-3.5-lightning-30b-a3b'
         );
 
-        $this->embeddingModel = config(
-            'services.nvidia.embedding_model',
-            'nvidia/nemotron-3-embed-1b'
-        );
-
         // Timeout konfigurasi dipisahkan secara terukur agar gagal terkontrol sebelum PHP timeout (60s)
-        $this->timeout = (int) config('services.nvidia.timeout', 30);
+        $this->timeout = (int) config('services.nvidia.timeout', 90);
         $this->connectTimeout = (int) config('services.nvidia.connect_timeout', 10);
         $this->streamTimeout = (int) config('services.nvidia.stream_timeout', 45);
-        $this->embeddingTimeout = (int) config('services.nvidia.embedding_timeout', 5);
     }
 
     /**
@@ -70,23 +60,16 @@ class NvidiaService
         return [
             'configured' => $this->hasApiKey(),
             'model' => $this->model,
-            'embedding_model' => $this->embeddingModel,
             'base_url' => $this->baseUrl,
             'timeout' => $this->timeout,
             'connect_timeout' => $this->connectTimeout,
             'stream_timeout' => $this->streamTimeout,
-            'embedding_timeout' => $this->embeddingTimeout,
         ];
     }
 
     public function getModel(): string
     {
         return $this->model;
-    }
-
-    public function getEmbeddingModel(): string
-    {
-        return $this->embeddingModel;
     }
 
     public function getTimeout(): int
@@ -102,11 +85,6 @@ class NvidiaService
     public function getStreamTimeout(): int
     {
         return $this->streamTimeout;
-    }
-
-    public function getEmbeddingTimeout(): int
-    {
-        return $this->embeddingTimeout;
     }
 
     /**
@@ -197,6 +175,9 @@ class NvidiaService
                     'temperature' => min(max($temperature, 0), 1),
                     'top_p' => 0.95,
                     'max_tokens' => $maxTokens,
+                    'chat_template_kwargs' => [
+                        'enable_thinking' => false,
+                    ],
                     'stream' => false,
                 ]);
 
@@ -417,6 +398,9 @@ class NvidiaService
                     'temperature' => min(max($temperature, 0), 1),
                     'top_p' => 0.95,
                     'max_tokens' => $maxTokens,
+                    'chat_template_kwargs' => [
+                        'enable_thinking' => false,
+                    ],
                     'stream' => true,
                 ]);
 
@@ -697,97 +681,6 @@ class NvidiaService
     }
 
     /**
-     * Generate embedding menggunakan NVIDIA NIM.
-     * Menggunakan timeout singkat (default 5s) agar tidak menghambat pipeline.
-     */
-    public function generateEmbedding(string $text): ?array
-    {
-        $totalStart = microtime(true);
-
-        if (!$this->hasApiKey()) {
-            return $this->generateMockEmbedding($text);
-        }
-
-        try {
-            $url = "{$this->baseUrl}/embeddings";
-            $textLength = strlen($text);
-
-            Log::info(
-                '[NVIDIA] ===== START EMBEDDING =====',
-                [
-                    'model' => $this->embeddingModel,
-                    'text_chars' => $textLength,
-                    'estimated_tokens' => (int) ceil($textLength / 4),
-                    'timeout' => $this->embeddingTimeout,
-                    'connect_timeout' => 5,
-                ]
-            );
-
-            $requestStart = microtime(true);
-
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . trim($this->apiKey),
-                'Content-Type' => 'application/json',
-                'Accept' => 'application/json',
-            ])
-                ->withOptions([
-                    'version' => '1.1',
-                ])
-                ->connectTimeout(5)
-                ->timeout($this->embeddingTimeout)
-                ->post($url, [
-                    'model' => $this->embeddingModel,
-                    'input' => $text,
-                    'encoding_format' => 'float',
-                ]);
-
-            $requestDuration = microtime(true) - $requestStart;
-
-            if ($response->successful()) {
-                $data = $response->json();
-                $embedding = $data['data'][0]['embedding'] ?? null;
-
-                if ($embedding !== null) {
-                    Log::info(
-                        '[NVIDIA] Embedding berhasil',
-                        [
-                            'dimension' => count($embedding),
-                            'request_seconds' => round($requestDuration, 4),
-                            'total_seconds' => round(microtime(true) - $totalStart, 4),
-                        ]
-                    );
-
-                    return $embedding;
-                }
-            }
-
-            Log::warning(
-                '[NVIDIA] Gagal generate embedding, fallback ke mock',
-                [
-                    'status' => $response->status(),
-                    'total_seconds' => round(microtime(true) - $totalStart, 4),
-                ]
-            );
-
-            return $this->generateMockEmbedding($text);
-
-        } catch (\Throwable $e) {
-            $totalDuration = microtime(true) - $totalStart;
-
-            Log::warning(
-                '[NVIDIA] Exception saat generate embedding, fallback ke mock',
-                [
-                    'type' => get_class($e),
-                    'message' => $this->sanitizeLogString($e->getMessage()),
-                    'total_seconds' => round($totalDuration, 4),
-                ]
-            );
-
-            return $this->generateMockEmbedding($text);
-        }
-    }
-
-    /**
      * Membuat response fallback ketika NVIDIA tidak tersedia.
      */
     protected function generateFallbackResponse(
@@ -827,26 +720,6 @@ class NvidiaService
         array $messages,
         string $reason
     ): string {
-        return "Sistem rekomendasi lokal digunakan.\n\n"
-            . "Status NVIDIA: {$reason}\n\n"
-            . "Rekomendasi tetap dibuat berdasarkan data karakter, senjata, artefak, mekanik, reaksi, dan aturan tim yang tersedia di sistem.";
-    }
-
-    /**
-     * Mock embedding ketika NVIDIA tidak tersedia.
-     */
-    protected function generateMockEmbedding(string $text): array
-    {
-        $dimension = 384;
-        $hash = hash('sha256', $text);
-        $embedding = [];
-
-        for ($i = 0; $i < $dimension; $i++) {
-            $index = ($i * 2) % strlen($hash);
-            $value = hexdec(substr($hash, $index, 2));
-            $embedding[] = ($value / 127.5) - 1;
-        }
-
-        return $embedding;
+        return "Layanan AI NVIDIA tidak tersedia.\n\nStatus NVIDIA: {$reason}";
     }
 }

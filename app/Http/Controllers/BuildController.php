@@ -67,7 +67,7 @@ class BuildController extends Controller
             'team' => 'nullable|array',
             'content_mode' => 'nullable|string',
             'custom_query' => 'nullable|string',
-            'use_local_knowledge' => 'nullable|boolean',
+            'preferred_role' => 'nullable|string|max:80',
         ]);
 
         $characterSlug = $request->input('character');
@@ -75,7 +75,7 @@ class BuildController extends Controller
         $team = $request->input('team', []);
         $contentMode = $request->input('content_mode', 'abyss');
         $customQuery = $request->input('custom_query');
-        $useLocalKnowledge = $request->boolean('use_local_knowledge', true);
+        $preferredRole = $request->input('preferred_role');
 
         set_time_limit(120);
 
@@ -86,7 +86,7 @@ class BuildController extends Controller
                 $team,
                 $contentMode,
                 $customQuery,
-                $useLocalKnowledge
+                $preferredRole
             );
 
             if (!empty($result['error'])) {

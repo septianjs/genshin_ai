@@ -312,7 +312,7 @@
 
                 <div class="rounded-xl bg-slate-900/80 border border-slate-800 p-3">
                     <div class="text-lg mb-1">🔎</div>
-                    <span class="text-slate-400">RAG</span>
+                    <span class="text-slate-400">Character data</span>
                 </div>
 
                 <div class="rounded-xl bg-slate-900/80 border border-slate-800 p-3">
@@ -506,6 +506,20 @@
 
             </div>
 
+
+            <div class="mb-4">
+                <label class="block text-xs font-semibold text-slate-300 mb-1.5" for="preferredBuildRole">
+                    Role eksperimen (opsional)
+                </label>
+                <input
+                    id="preferredBuildRole"
+                    type="text"
+                    x-model="preferredRole"
+                    maxlength="80"
+                    placeholder="Contoh: Barbara DPS physical, healer jadi driver"
+                    class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-teyvat-gold transition"
+                >
+            </div>
 
             <!-- Constellation -->
 
@@ -759,16 +773,6 @@
             <!-- Generate -->
 
             <div class="mt-4 space-y-2">
-
-                <label class="flex items-center gap-2 text-xs text-slate-300">
-                    <input
-                        type="checkbox"
-                        x-model="useLocalKnowledge"
-                        class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-amber-400 focus:ring-amber-500"
-                    >
-                    Gunakan panduan lokal saat AI tidak tersedia
-                </label>
-
                 <button
                     type="button"
                     @click="generateBuild()"
@@ -889,7 +893,7 @@
                         ></h3>
 
                         <p class="text-xs text-slate-400 mt-1">
-                            Rekomendasi build berdasarkan mekanik, tim, RAG, dan AI.
+                            Rekomendasi AI berdasarkan data karakter, mekanik, dan tim.
                         </p>
 
                     </div>
@@ -1286,7 +1290,7 @@
 <footer class="border-t border-teyvat-border py-4 px-6 text-center text-xs text-slate-500 bg-slate-950">
 
     <p>
-        Genshin Build AI • Laravel 12 • RAG • NVIDIA NIM • Nemotron
+        Genshin Build AI • Laravel 12 • NVIDIA NIM • Nemotron
     </p>
 
 </footer>
@@ -1320,6 +1324,8 @@
 
             contentMode: 'abyss',
 
+            preferredRole: '',
+
             teamSlugs: [
                 'neuvillette',
                 'kazuha',
@@ -1333,8 +1339,6 @@
             triggeredReactions: [],
 
             buildResult: null,
-
-            useLocalKnowledge: true,
 
             loadingBuild: false,
 
@@ -1744,8 +1748,8 @@
                         content_mode:
                             this.contentMode,
 
-                        use_local_knowledge:
-                            this.useLocalKnowledge,
+                        preferred_role:
+                            this.preferredRole.trim() || null,
 
                     };
 

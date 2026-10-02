@@ -26,8 +26,6 @@ class IntentClassifier
 
     public const INTENT_CHARACTER_QUESTION = 'CHARACTER_QUESTION';
 
-    public const INTENT_KNOWLEDGE_STATUS = 'KNOWLEDGE_STATUS';
-
     /**
      * Mengklasifikasikan intensi dari query pengguna.
      */
@@ -37,11 +35,6 @@ class IntentClassifier
 
         if (preg_match('/^(hai|halo|hello|hi|hey|pagi|siang|sore|malam|selamat\s+(?:pagi|siang|sore|malam))(?:[!.,\s👋🙂😊]*)$/u', $lower)) {
             return self::INTENT_GREETING;
-        }
-
-        if (preg_match('/\b(panduan|knowledge)\b/u', $lower)
-            && preg_match('/\b(lokal|tersedia|ada|apa\s+saja|apa\s+aja|daftar)\b/u', $lower)) {
-            return self::INTENT_KNOWLEDGE_STATUS;
         }
 
         $explicitBuildRequest = preg_match('/\b(build(?:ing)?|membangun|membuild|buat(?:kan)?\s+(?:build|rekomendasi)|rekomendasi\s+build)\b/u', $lower) === 1;

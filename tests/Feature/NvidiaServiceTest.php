@@ -39,6 +39,7 @@ class NvidiaServiceTest extends TestCase
         $this->assertSame('success', $result['status']);
         $this->assertSame('Build response', $result['content']);
         $this->assertSame('nvidia', $result['source']);
+        Http::assertSent(fn ($request) => $request['chat_template_kwargs']['enable_thinking'] === false);
     }
 
     public function test_chat_stream_parses_nvidia_sse_chunks(): void
@@ -65,5 +66,6 @@ class NvidiaServiceTest extends TestCase
         $this->assertSame('Hello', $result['content']);
         $this->assertSame('Hello', $receivedTokens);
         $this->assertSame('nvidia', $result['source']);
+        Http::assertSent(fn ($request) => $request['chat_template_kwargs']['enable_thinking'] === false);
     }
 }

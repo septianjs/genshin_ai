@@ -3,7 +3,6 @@
 namespace App\Services\Ai;
 
 use App\Models\Character;
-use App\Models\BuildKnowledge;
 use App\Services\Genshin\GenshinApiService;
 use App\Services\Mechanics\ConstellationImpactService;
 use App\Services\Mechanics\ContentModeService;
@@ -13,8 +12,8 @@ use App\Services\Nvidia\NvidiaService;
 use App\Services\QueryUnderstanding\EntityExtractor;
 use App\Services\QueryUnderstanding\IntentClassifier;
 use App\Services\Rag\ContextBuilder;
-use App\Services\Rag\VectorStoreService;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 class RecommendationEngine
 {
@@ -26,7 +25,6 @@ class RecommendationEngine
         protected ElementalReactionService $reactionService,
         protected ConstellationImpactService $constellationService,
         protected ContentModeService $contentModeService,
-        protected VectorStoreService $vectorStoreService,
         protected ContextBuilder $contextBuilder,
         protected NvidiaService $nvidiaService
     ) {}
@@ -42,7 +40,7 @@ class RecommendationEngine
         array $teammateSlugs = [],
         string $contentMode = 'abyss',
         ?string $customQuery = null,
-        bool $useLocalKnowledge = true
+        ?string $preferredRole = null
     ): array {
         $totalStart =
             microtime(true);
@@ -51,6 +49,12 @@ class RecommendationEngine
             strtolower(
                 trim($characterSlug)
             );
+
+        $preferredRole = trim((string) $preferredRole);
+
+        if ($preferredRole === '' && $customQuery !== null) {
+            $preferredRole = trim((string) ($this->entityExtractor->extract($customQuery)['role'] ?? ''));
+        }
 
         Log::info(
             '[BUILD] ===== START generateBuild =====',
@@ -197,16 +201,47 @@ class RecommendationEngine
             ->where('id', '!=', $character->id)
             ->orderBy('name')
             ->get([
+                'slug',
                 'name',
                 'vision',
                 'weapon_type',
+                'icon_url',
             ])
             ->map(fn (Character $candidate) => [
+                'slug' => $candidate->slug,
                 'name' => $candidate->name,
                 'vision' => $candidate->vision,
                 'weapon_type' => $candidate->weapon_type,
+                'icon_url' => $candidate->icon_url,
             ])
             ->all();
+
+        $catalogCache = Cache::store('file');
+        $weaponCatalog = $catalogCache->get('build_weapon_catalog');
+        if (! is_array($weaponCatalog) || $weaponCatalog === []) {
+            $weaponCatalog = $this->genshinService->getWeaponCatalog();
+
+            if ($weaponCatalog !== []) {
+                $catalogCache->put('build_weapon_catalog', $weaponCatalog, 21600);
+            }
+        }
+
+        $expectedWeaponType = $this->normalizeWeaponType($character->weapon_type);
+        $weaponCandidates = array_values(array_filter(
+            is_array($weaponCatalog) ? $weaponCatalog : [],
+            fn (array $weapon): bool => $this->normalizeWeaponType(
+                (string) ($weapon['type'] ?? $weapon['weapon_type'] ?? '')
+            ) === $expectedWeaponType
+        ));
+
+        $artifactCandidates = $catalogCache->get('build_artifact_catalog');
+        if (! is_array($artifactCandidates) || $artifactCandidates === []) {
+            $artifactCandidates = $this->genshinService->getArtifactCatalog();
+
+            if ($artifactCandidates !== []) {
+                $catalogCache->put('build_artifact_catalog', $artifactCandidates, 21600);
+            }
+        }
 
         $mechanicsData = [
             'resonances' =>
@@ -241,82 +276,7 @@ class RecommendationEngine
 
         /*
          * ========================================================
-         * 4. RAG
-         * ========================================================
-         *
-         * RAG adalah grounding tambahan.
-         *
-         * Tidak adanya knowledge lokal TIDAK membuat build gagal.
-         */
-        $teamContext =
-            implode(
-                ', ',
-                array_map(
-                    fn (
-                        Character $teammate
-                    ) =>
-                        "{$teammate->name} {$teammate->vision}",
-                    $teammates
-                )
-            );
-
-        $ragQuery =
-            trim(
-                implode(
-                    ' ',
-                    array_filter([
-                        "Build guide {$character->name}",
-                        $character->vision,
-                        $character->weapon_type,
-                        "C{$constellation}",
-                        $contentMode,
-
-                        $teamContext !== ''
-                            ? "team {$teamContext}"
-                            : '',
-
-                        $customQuery ?? '',
-                    ])
-                )
-            );
-
-        $ragStart =
-            microtime(true);
-
-        $ragChunks =
-            $this->vectorStoreService
-                ->searchSimilar(
-                    $character,
-                    $ragQuery,
-                    $contentMode,
-                    3,
-                    array_map(
-                        fn (
-                            Character $teammate
-                        ) =>
-                            $teammate->id,
-                        $teammates
-                    )
-                );
-
-        $ragDuration =
-            microtime(true)
-            - $ragStart;
-
-        $buildKnowledgeAvailable =
-            collect(
-                $ragChunks
-            )->contains(
-                fn (
-                    BuildKnowledge $chunk
-                ) =>
-                    $chunk->category
-                    !== 'character_overview'
-            );
-
-        /*
-         * ========================================================
-         * 5. SYSTEM PROMPT
+         * 4. SYSTEM PROMPT
          * ========================================================
          */
         $promptStart =
@@ -327,8 +287,10 @@ class RecommendationEngine
                 ->buildSystemPrompt(
                     $character,
                     $mechanicsData,
-                    $ragChunks,
-                    $teamCandidates
+                    $teamCandidates,
+                    $preferredRole !== '' ? $preferredRole : null,
+                    $weaponCandidates,
+                    $artifactCandidates
                 );
 
         $promptDuration =
@@ -376,57 +338,52 @@ class RecommendationEngine
                 ->chat(
                     $messages,
                     0.2,
-                    1000
+                    1800
                 );
 
         $nvidiaDuration =
             microtime(true)
             - $nvidiaStart;
 
-        $localRecommendation =
-            null;
+        $unsupportedWeapons = $this->unsupportedWeaponNames(
+            (string) ($aiResponse['content'] ?? ''),
+            is_array($weaponCatalog) ? $weaponCatalog : [],
+            $weaponCandidates
+        );
+        $responseHasInternalReasoning = $this->containsInternalReasoning((string) ($aiResponse['content'] ?? ''));
 
-        /*
-         * NVIDIA fallback hanya mencoba knowledge lokal.
-         *
-         * Tetapi jika tidak tersedia, jangan berpura-pura
-         * bahwa AI berhasil.
-         */
+        if ($responseHasInternalReasoning || $unsupportedWeapons !== []) {
+            Log::warning('[BUILD] Model output needs a factual retry.', [
+                'character' => $character->slug,
+                'internal_reasoning' => $responseHasInternalReasoning,
+                'unsupported_weapons' => $unsupportedWeapons,
+            ]);
+
+            $retryMessages = $messages;
+            $retryMessages[0]['content'] .= "\n\nOUTPUT CONTRACT: Return only the user-facing final build. Never include analysis, reasoning, planning, or phrases such as 'let me think'. Start with the build role and recommendations.";
+            $retryMessages[1]['content'] .= "\n\nReturn only the finished recommendation. Include artifacts, main stats, substats, weapons, team, and rotation.";
+
+            if ($unsupportedWeapons !== []) {
+                $retryMessages[0]['content'] .= "\n\nWEAPON TYPE CORRECTION: The previous answer named these incompatible weapons: "
+                    .implode(', ', $unsupportedWeapons)
+                    .". Select weapons only from the supplied compatible weapon catalog.";
+            }
+
+            $retryStart = microtime(true);
+            $aiResponse = $this->nvidiaService->chat(
+                $retryMessages,
+                0.1,
+                2000
+            );
+            $nvidiaDuration += microtime(true) - $retryStart;
+        }
+
         if (
             ($aiResponse['status'] ?? null)
             === 'fallback'
         ) {
-            if (
-                $useLocalKnowledge
-            ) {
-                $localRecommendation =
-                    $this->buildLocalRecommendation(
-                        $character->slug,
-                        $contentMode
-                    );
-
-                if (
-                    $localRecommendation !== null
-                ) {
-                    $aiResponse['content'] =
-                        $localRecommendation;
-
-                    $aiResponse['source'] =
-                        'local';
-
-                    $aiResponse['fallback_reason'] =
-                        $aiResponse['fallback_reason']
-                        ?? 'LOCAL_KNOWLEDGE_FALLBACK';
-                } else {
-                    /*
-                     * Tidak boleh menghasilkan build palsu.
-                     */
-                    $aiResponse['content'] =
-                        "Layanan AI NVIDIA sedang tidak tersedia. "
-                        ."Data build lokal khusus {$character->name} "
-                        ."juga belum tersedia.";
-                }
-            }
+            $aiResponse['content'] =
+                "Layanan AI NVIDIA sedang tidak tersedia. Rekomendasi build {$character->name} belum dapat dibuat; silakan coba lagi saat layanan tersedia.";
         }
 
         if ($this->containsInternalReasoning((string) ($aiResponse['content'] ?? ''))) {
@@ -436,15 +393,67 @@ class RecommendationEngine
 
             $aiResponse['status'] = 'fallback';
             $aiResponse['fallback_reason'] = 'INTERNAL_REASONING_FILTERED';
-            $localRecommendation = $useLocalKnowledge
-                ? $this->buildLocalRecommendation($character->slug, $contentMode)
-                : null;
+            $aiResponse['content'] = 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
+        }
 
-            if ($localRecommendation !== null) {
-                $aiResponse['content'] = $localRecommendation;
-                $aiResponse['source'] = 'local';
-            } else {
-                $aiResponse['content'] = 'Maaf, jawaban belum berhasil disusun. Silakan coba ajukan pertanyaan lagi.';
+        $unsupportedWeapons = $this->unsupportedWeaponNames(
+            (string) ($aiResponse['content'] ?? ''),
+            is_array($weaponCatalog) ? $weaponCatalog : [],
+            $weaponCandidates
+        );
+        if ($unsupportedWeapons !== []) {
+            Log::warning('[BUILD] Model retry still included incompatible weapon types.', [
+                'character' => $character->slug,
+                'unsupported_weapons' => $unsupportedWeapons,
+            ]);
+
+            $aiResponse['status'] = 'fallback';
+            $aiResponse['fallback_reason'] = 'INVALID_WEAPON_TYPE';
+            $aiResponse['content'] = "AI belum berhasil memilih senjata yang cocok untuk tipe {$character->weapon_type}. Silakan coba generate ulang.";
+        }
+
+        $recommendationCards = null;
+
+        if (($aiResponse['status'] ?? null) !== 'fallback') {
+            $recommendationCards = $this->parseBuildRecommendation(
+                (string) ($aiResponse['content'] ?? ''),
+                $character,
+                $teamCandidates,
+                $weaponCandidates,
+                $artifactCandidates
+            );
+
+            if ($recommendationCards === null) {
+                Log::warning('[BUILD] Model output did not match the validated ranked-build schema; retrying once.', [
+                    'character' => $character->slug,
+                ]);
+
+                $retryMessages = $messages;
+                $retryMessages[0]['content'] .= "\n\nJSON RETRY: Output exactly one valid JSON object using the required schema. Use only the exact IDs in the supplied weapon/artifact catalogs and only teammate slugs in the database roster. Include exactly four ranked artifacts, four ranked weapons, and four ranked teams. Do not include Markdown or prose outside JSON.";
+                $retryStart = microtime(true);
+                $aiResponse = $this->nvidiaService->chat($retryMessages, 0.1, 3200);
+                $nvidiaDuration += microtime(true) - $retryStart;
+
+                if (($aiResponse['status'] ?? null) !== 'fallback') {
+                    $recommendationCards = $this->parseBuildRecommendation(
+                        (string) ($aiResponse['content'] ?? ''),
+                        $character,
+                        $teamCandidates,
+                        $weaponCandidates,
+                        $artifactCandidates
+                    );
+                }
+            }
+
+            if ($recommendationCards === null && ($aiResponse['status'] ?? null) !== 'fallback') {
+                $aiResponse['status'] = 'fallback';
+                $aiResponse['fallback_reason'] = 'INVALID_BUILD_RESPONSE';
+                $aiResponse['content'] = 'AI belum menghasilkan rekomendasi terstruktur yang bisa diverifikasi. Silakan coba sekali lagi.';
+            } elseif ($recommendationCards !== null) {
+                $aiResponse['content'] = $this->formatBuildRecommendation(
+                    $character->name,
+                    $recommendationCards
+                );
             }
         }
 
@@ -551,40 +560,17 @@ class RecommendationEngine
                 ?? null,
 
             'recommendation_source' =>
-                $localRecommendation !== null
-                    ? 'local_knowledge'
-                    : (
-                        ($aiResponse['status'] ?? null)
-                        === 'fallback'
-                            ? 'ai_unavailable'
-                            : (
-                                $aiResponse['source']
-                                ?? null
-                            )
-                    ),
+                ($aiResponse['status'] ?? null) === 'fallback'
+                    ? 'ai_unavailable'
+                    : ($aiResponse['source'] ?? null),
 
-            'knowledge_available' =>
-                $buildKnowledgeAvailable,
-
-            'knowledge_categories' =>
-                collect(
-                    $ragChunks
-                )
-                    ->pluck('category')
-                    ->unique()
-                    ->values()
-                    ->all(),
+            'recommendation_cards' =>
+                $recommendationCards,
 
             'performance' => [
                 'total_seconds' =>
                     round(
                         $totalDuration,
-                        4
-                    ),
-
-                'rag_seconds' =>
-                    round(
-                        $ragDuration,
                         4
                     ),
 
@@ -605,8 +591,12 @@ class RecommendationEngine
 
     /**
      * ============================================================
-     * LOCAL BUILD
+     * FREE TEXT
      * ============================================================
+     *
+     * Dipakai oleh endpoint Generate Build.
+     *
+     * Jangan gunakan method ini sebagai chatbot umum.
      */
     protected function containsInternalReasoning(string $content): bool
     {
@@ -616,176 +606,234 @@ class RecommendationEngine
         ) === 1;
     }
 
-    public function buildLocalRecommendation(
-        string $characterSlug,
-        string $contentMode = 'abyss'
-    ): ?string {
-        $character =
-            Character::query()
-                ->where(
-                    'slug',
-                    $characterSlug
-                )
-                ->orderByDesc(
-                    'patch_version'
-                )
-                ->first();
+    protected function normalizeWeaponType(string $weaponType): string
+    {
+        return strtolower(preg_replace('/[^a-z]/i', '', $weaponType) ?? '');
+    }
 
-        if (
-            $character === null
-        ) {
+    protected function parseBuildRecommendation(
+        string $content,
+        Character $character,
+        array $teamCandidates,
+        array $weaponCandidates,
+        array $artifactCandidates
+    ): ?array {
+        $jsonStart = strpos($content, '{');
+        $jsonEnd = strrpos($content, '}');
+
+        if ($jsonStart === false || $jsonEnd === false || $jsonEnd < $jsonStart) {
             return null;
         }
 
-        $knowledge =
-            BuildKnowledge::query()
-                ->where(
-                    'character_id',
-                    $character->id
-                )
-                ->where(
-                    'patch_version',
-                    $character->patch_version
-                )
-                ->where(
-                    'category',
-                    '!=',
-                    'character_overview'
-                )
-                ->where(
-                    function ($query)
-                    use ($contentMode) {
-                        $query
-                            ->where(
-                                'target_content',
-                                $contentMode
-                            )
-                            ->orWhere(
-                                'target_content',
-                                'universal'
-                            );
-                    }
-                )
-                ->get();
-
-        if (
-            $knowledge->isEmpty()
-        ) {
-            $overview = BuildKnowledge::query()
-                ->where('character_id', $character->id)
-                ->where('patch_version', $character->patch_version)
-                ->where('category', 'character_overview')
-                ->where('target_content', 'universal')
-                ->first();
-
-            if ($overview === null) {
-                return null;
-            }
-
-            return "# Build {$character->name}\n\n"
-                .'Panduan build terkurasi untuk karakter ini belum tersedia. '
-                .'Berikut profil karakter dari data lokal; rekomendasi artefak '
-                ."dan senjata tidak dibuat tanpa data yang mendukung.\n\n"
-                .$overview->content;
+        $payload = json_decode(substr($content, $jsonStart, $jsonEnd - $jsonStart + 1), true);
+        if (! is_array($payload) || json_last_error() !== JSON_ERROR_NONE) {
+            return null;
         }
 
-        $categoryOrder = [
-            'role_and_reactions' =>
-                0,
+        $weaponById = collect($weaponCandidates)->keyBy('id');
+        $artifactById = collect($artifactCandidates)->keyBy('id');
+        $teamBySlug = collect($teamCandidates)->keyBy('slug');
 
-            'weapons_ranking' =>
-                1,
+        $artifacts = collect($payload['artifacts'] ?? [])
+            ->take(4)
+            ->map(function (array $item) use ($artifactById): ?array {
+                $artifact = $artifactById->get((string) ($item['id'] ?? ''));
+                if ($artifact === null) {
+                    return null;
+                }
 
-            'artifact_priorities' =>
-                2,
+                return [
+                    'rank' => max(1, min(4, (int) ($item['rank'] ?? 0))),
+                    'id' => (string) $artifact['id'],
+                    'image_id' => (string) $artifact['id'],
+                    'name' => (string) $artifact['name'],
+                    'rarity' => $artifact['max_rarity'] ?? null,
+                    'two_piece_bonus' => $artifact['2-piece_bonus'] ?? null,
+                    'four_piece_bonus' => $artifact['4-piece_bonus'] ?? null,
+                    'main_stats' => is_array($item['main_stats'] ?? null) ? $item['main_stats'] : [],
+                    'substats' => array_values(array_filter($item['substats'] ?? [], 'is_string')),
+                    'reason' => trim((string) ($item['reason'] ?? '')),
+                ];
+            })
+            ->filter()
+            ->sortBy('rank')
+            ->values();
 
-            'er_breakpoints' =>
-                3,
+        $weapons = collect($payload['weapons'] ?? [])
+            ->take(4)
+            ->map(function (array $item) use ($weaponById): ?array {
+                $weapon = $weaponById->get((string) ($item['id'] ?? ''));
+                if ($weapon === null) {
+                    return null;
+                }
 
-            'team_synergies' =>
-                4,
+                return [
+                    'rank' => max(1, min(4, (int) ($item['rank'] ?? 0))),
+                    'id' => (string) $weapon['id'],
+                    'image_id' => (string) $weapon['id'],
+                    'name' => (string) $weapon['name'],
+                    'weapon_type' => (string) ($weapon['type'] ?? $weapon['weapon_type'] ?? ''),
+                    'rarity' => $weapon['rarity'] ?? null,
+                    'base_attack' => $weapon['baseAttack'] ?? $weapon['base_attack'] ?? null,
+                    'secondary_stat' => $weapon['subStat'] ?? $weapon['secondary_stat'] ?? null,
+                    'passive_name' => $weapon['passiveName'] ?? $weapon['passive_name'] ?? null,
+                    'passive_description' => $weapon['passiveDesc'] ?? $weapon['passive_description'] ?? null,
+                    'reason' => trim((string) ($item['reason'] ?? '')),
+                ];
+            })
+            ->filter()
+            ->sortBy('rank')
+            ->values();
 
-            'rotation' =>
-                5,
+        $teams = collect($payload['teams'] ?? [])
+            ->take(4)
+            ->map(function (array $team) use ($teamBySlug, $character): ?array {
+                $slugs = array_values(array_unique(array_filter(
+                    $team['teammate_slugs'] ?? [],
+                    fn ($slug) => is_string($slug) && $slug !== $character->slug && $teamBySlug->has($slug)
+                )));
+
+                if ($slugs === []) {
+                    return null;
+                }
+
+                $members = [[
+                    'slug' => $character->slug,
+                    'name' => $character->name,
+                    'vision' => $character->vision,
+                    'weapon_type' => $character->weapon_type,
+                    'icon_url' => $character->icon_url,
+                ]];
+
+                foreach (array_slice($slugs, 0, 3) as $slug) {
+                    $member = $teamBySlug->get($slug);
+                    $members[] = [
+                        'slug' => $member['slug'],
+                        'name' => $member['name'],
+                        'vision' => $member['vision'],
+                        'weapon_type' => $member['weapon_type'],
+                        'icon_url' => $member['icon_url'] ?? null,
+                    ];
+                }
+
+                return [
+                    'rank' => max(1, min(4, (int) ($team['rank'] ?? 0))),
+                    'members' => $members,
+                    'reason' => trim((string) ($team['reason'] ?? '')),
+                ];
+            })
+            ->filter()
+            ->sortBy('rank')
+            ->values();
+
+        if ($artifacts->count() !== 4 || $weapons->count() !== 4 || $teams->count() !== 4) {
+            Log::warning('[BUILD] Structured recommendation failed catalog validation.', [
+                'character' => $character->slug,
+                'catalog_weapon_candidates' => count($weaponCandidates),
+                'catalog_artifact_candidates' => count($artifactCandidates),
+                'roster_team_candidates' => count($teamCandidates),
+                'valid_weapon_recommendations' => $weapons->count(),
+                'valid_artifact_recommendations' => $artifacts->count(),
+                'valid_team_recommendations' => $teams->count(),
+            ]);
+
+            return null;
+        }
+
+        return [
+            'role_analysis' => trim((string) ($payload['role_analysis'] ?? '')),
+            'artifacts' => $artifacts->all(),
+            'weapons' => $weapons->all(),
+            'teams' => $teams->all(),
+            'stat_priorities' => array_values(array_filter($payload['stat_priorities'] ?? [], 'is_string')),
+            'rotation' => array_values(array_filter($payload['rotation'] ?? [], 'is_string')),
+        ];
+    }
+
+    protected function formatBuildRecommendation(string $characterName, array $recommendation): string
+    {
+        $lines = [
+            "# {$characterName} Build",
+            '',
+            '## Peran dan Analisis Kit',
+            $recommendation['role_analysis'] ?: 'Build disusun berdasarkan kit dan role yang diminta.',
+            '',
+            '## Artefak (peringkat 1–4)',
         ];
 
-        $knowledge =
-            $knowledge->sortBy(
-                fn (
-                    BuildKnowledge $chunk
-                ) =>
-                    $categoryOrder[
-                        $chunk->category
-                    ]
-                    ?? 99
-            );
-
-        $recommendation =
-            "# Build {$character->name}\n\n";
-
-        $recommendation .=
-            "Rekomendasi lokal untuk mode "
-            ."{$contentMode} "
-            ."(data patch "
-            ."{$character->patch_version})."
-            ."\n\n";
-
-        foreach (
-            $knowledge
-            as $chunk
-        ) {
-            $heading =
-                match (
-                    $chunk->category
-                ) {
-                    'role_and_reactions' =>
-                        'Peran dan Reaksi',
-
-                    'weapons_ranking' =>
-                        'Senjata',
-
-                    'artifact_priorities' =>
-                        'Artefak dan Stat',
-
-                    'er_breakpoints' =>
-                        'Energy Recharge',
-
-                    'team_synergies' =>
-                        'Rekomendasi Tim',
-
-                    'rotation' =>
-                        'Rotasi',
-
-                    default =>
-                        ucfirst(
-                            str_replace(
-                                '_',
-                                ' ',
-                                $chunk->category
-                            )
-                        ),
-                };
-
-            $recommendation .=
-                "## {$heading}\n"
-                .$chunk->content
-                ."\n\n";
+        foreach ($recommendation['artifacts'] as $artifact) {
+            $lines[] = "{$artifact['rank']}. {$artifact['name']} — {$artifact['reason']}";
         }
 
-        return trim(
-            $recommendation
-        );
+        $lines[] = '';
+        $lines[] = '## Senjata (peringkat 1–4)';
+        foreach ($recommendation['weapons'] as $weapon) {
+            $lines[] = "{$weapon['rank']}. {$weapon['name']} — {$weapon['reason']}";
+        }
+
+        $lines[] = '';
+        $lines[] = '## Tim (peringkat 1–4)';
+        foreach ($recommendation['teams'] as $team) {
+            $lines[] = $team['rank'].'. '.implode(', ', array_column($team['members'], 'name'))
+                .' — '.$team['reason'];
+        }
+
+        $lines[] = '';
+        $lines[] = '## Prioritas Stat';
+        foreach ($recommendation['stat_priorities'] as $priority) {
+            $lines[] = '- '.$priority;
+        }
+
+        $lines[] = '';
+        $lines[] = '## Rotasi';
+        foreach ($recommendation['rotation'] as $step => $action) {
+            $lines[] = ($step + 1).'. '.$action;
+        }
+
+        return implode("\n", $lines);
     }
 
     /**
-     * ============================================================
-     * FREE TEXT
-     * ============================================================
-     *
-     * Dipakai oleh endpoint Generate Build.
-     *
-     * Jangan gunakan method ini sebagai chatbot umum.
+     * @param array<array<string, mixed>> $weaponCatalog
+     * @param array<array<string, mixed>> $compatibleWeapons
+     * @return array<string>
      */
+    protected function unsupportedWeaponNames(
+        string $content,
+        array $weaponCatalog,
+        array $compatibleWeapons
+    ): array {
+        if ($content === '' || $weaponCatalog === [] || $compatibleWeapons === []) {
+            return [];
+        }
+
+        $normalizeName = static fn (string $name): string => trim(
+            preg_replace('/[^a-z0-9]+/i', ' ', mb_strtolower($name)) ?? ''
+        );
+        $normalizedContent = ' '.$normalizeName($content).' ';
+        $compatibleIds = array_fill_keys(array_filter(array_map(
+            static fn (array $weapon): string => (string) ($weapon['id'] ?? ''),
+            $compatibleWeapons
+        )), true);
+        $unsupported = [];
+
+        foreach ($weaponCatalog as $weapon) {
+            $name = trim((string) ($weapon['name'] ?? ''));
+            $id = (string) ($weapon['id'] ?? '');
+            $normalizedName = $normalizeName($name);
+
+            if (
+                $normalizedName !== ''
+                && ! isset($compatibleIds[$id])
+                && str_contains($normalizedContent, ' '.$normalizedName.' ')
+            ) {
+                $unsupported[] = $name;
+            }
+        }
+
+        return array_values(array_unique($unsupported));
+    }
+
     public function processFreeTextQuery(
         string $rawQuery
     ): array {

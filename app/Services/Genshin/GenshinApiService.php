@@ -51,6 +51,22 @@ class GenshinApiService
     }
 
     /**
+     * @return array<array<string, mixed>>
+     */
+    public function getWeaponCatalog(): array
+    {
+        return $this->client->getWeaponCatalog();
+    }
+
+    /**
+     * @return array<array<string, mixed>>
+     */
+    public function getArtifactCatalog(): array
+    {
+        return $this->client->getArtifactCatalog();
+    }
+
+    /**
      * Melakukan sinkronisasi satu karakter dari API pihak ketiga ke database lokal.
      */
     public function syncCharacter(string $slug, ?string $patchVersion = null): ?Character

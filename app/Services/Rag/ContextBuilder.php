@@ -12,8 +12,10 @@ class ContextBuilder
     public function buildSystemPrompt(
         Character $character,
         array $mechanicsData,
-        array $ragChunks = [],
-        array $teamCandidates = []
+        array $teamCandidates = [],
+        ?string $preferredRole = null,
+        array $weaponCandidates = [],
+        array $artifactCandidates = []
     ): string {
         $vision = $character->vision;
         $weapon = $character->weapon_type;
@@ -25,6 +27,12 @@ class ContextBuilder
         $contentMode = $mechanicsData['content_profile']['name'] ?? 'Spiral Abyss';
         $teamCharacters = $mechanicsData['team'] ?? [];
         $teamCandidatesText = $this->teamCandidateText($teamCandidates);
+        $weaponCandidatesText = $this->weaponCandidateText($weaponCandidates);
+        $artifactCandidatesText = $this->artifactCandidateText($artifactCandidates);
+        $preferredRole = trim((string) $preferredRole);
+        $roleInstruction = $preferredRole !== ''
+            ? "Role eksperimen yang diminta user: {$preferredRole}. Anda wajib membuat rekomendasi untuk role ini, sekalipun berbeda dari role populer atau panduan lokal. Jelaskan trade-off dan cara memaksimalkan role tersebut; jangan menggantinya dengan build standar."
+            : 'Tidak ada role eksperimen khusus. Pilih role berdasarkan kit karakter, tetapi tetap berikan build lengkap.';
 
         // 1. Data Mekanik Tim (Resonansi & Reaksi)
         $resonancesText = '';
@@ -57,61 +65,34 @@ class ContextBuilder
             $teamText = "- Belum ditentukan.\n";
         }
 
-        // 3. RAG Theorycraft Chunks
-        $theorycraftText = '';
-        $seenChunks = [];
-        $chunkLimit = 3;
-        $chunkCharLimit = 1000;
-        $buildKnowledgeAvailable = collect($ragChunks)->contains(
-            fn ($chunk) => ($chunk->category ?? null) !== 'character_overview'
-        );
-
-        foreach ($ragChunks as $index => $chunk) {
-            if ($index >= $chunkLimit) {
-                break;
-            }
-
-            $chunkKey = strtolower(trim(($chunk->title ?? '').'|'.($chunk->category ?? '').'|'.($chunk->content ?? '')));
-            if ($chunkKey === '' || isset($seenChunks[$chunkKey])) {
-                continue;
-            }
-
-            $seenChunks[$chunkKey] = true;
-
-            $chunkContent = trim((string) ($chunk->content ?? ''));
-            if (mb_strlen($chunkContent) > $chunkCharLimit) {
-                $chunkContent = mb_substr($chunkContent, 0, $chunkCharLimit).'...';
-            }
-
-            $source = $chunk->source
-                ? " | Sumber: {$chunk->source}"
-                : ' | Sumber/provenance belum dicatat';
-            $theorycraftText .= "### {$chunk->title} ({$chunk->category}; patch {$chunk->patch_version}{$source})\n{$chunkContent}\n\n";
-        }
-
-        if ($theorycraftText === '') {
-            $theorycraftText = "Tidak ada knowledge RAG lokal yang cocok untuk karakter, patch, dan mode ini.\n";
-        }
-        $knowledgeStatus = $this->knowledgeStatusText($buildKnowledgeAvailable);
-
         return <<<PROMPT
 Anda adalah **Genshin Build AI**, asisten Genshin Impact (target patch konfigurasi: v{$patch}).
 
 ### ATURAN UTAMA:
-1. Bedakan tegas fakta entity dari knowledge theorycraft. Jangan menyebut rekomendasi sebagai hasil RAG bila tidak ada knowledge relevan.
+1. Selalu hasilkan rekomendasi build best-effort. Jangan menolak atau membatasi build hanya karena role tidak populer.
 2. Analisis Anda harus secara spesifik mempertimbangkan **Tingkat Konstelasi C{$constellationLevel}**, **Target Konten: {$contentMode}**, dan **Sinergi Reaksi Tim**.
-3. Analisis kit karakter yang diberikan untuk menentukan pola damage, role, scaling, kebutuhan energi, dan stat yang mendukung kit. Jangan hanya mengulang retrieved knowledge.
-4. Gunakan retrieved knowledge sebagai referensi, bukan satu-satunya sumber. Bedakan fakta kit dari rekomendasi hasil analisis; tandai perkiraan sebagai perkiraan dan jangan mengklaimnya sebagai data terkurasi.
-5. Jangan mengarang angka talent, efek senjata/artefak, atau mekanik yang tidak ada di context. Target ER boleh berupa kisaran awal yang diberi label perkiraan dan harus dijelaskan sebagai bergantung pada tim/rotasi. Jangan membuat ranking mutlak tanpa dasar.
-6. Sajikan rekomendasi dalam Bahasa Indonesia dengan bagian berikut:
+3. {$roleInstruction}
+4. Analisis kit karakter yang diberikan untuk menentukan pola damage, role, scaling, kebutuhan energi, dan stat yang mendukung build yang diminta. Jangan hanya mengulang retrieved knowledge.
+5. Gunakan pengetahuan Genshin yang Anda miliki untuk mengusulkan artefak dan senjata; data database karakter adalah fakta kit/identitas, bukan daftar build yang membatasi pilihan.
+6. Jangan mengarang angka talent, efek senjata/artefak, atau mekanik yang tidak ada di context. Target ER boleh berupa kisaran awal yang diberi label perkiraan dan harus dijelaskan sebagai bergantung pada tim/rotasi. Jangan membuat ranking mutlak tanpa dasar.
+7. Validasi setiap rekomendasi terhadap deskripsi kit: jangan menyebut skill/Burst menghasilkan damage jika data hanya menyebut heal atau utility; jangan memilih bonus Burst DMG untuk damage pribadi bila Burst tidak memberi damage. Bedakan bonus set yang hanya menguntungkan rekan tim.
+8. Jangan mengarang rarity, secondary stat, atau passive senjata/artefak. Pastikan senjata cocok dengan tipe senjata karakter. Jika detail item tidak dapat dipastikan, berikan nama opsi tanpa mengarang efek numerik.
+9. Normal/Charged Attack Catalyst memberikan damage elemental sesuai kit/infusion, bukan Physical DMG secara default. Jangan merekomendasikan Physical DMG untuk serangan Catalyst tanpa sumber Physical damage/infusion yang disebutkan.
+10. Elemental conversion tidak otomatis mengubah kategori damage menjadi Elemental Burst DMG. Cocokkan bonus artefak dengan kategori damage yang benar-benar disebut pada deskripsi talent; misalnya normal attack yang dikonversi menjadi Electro tetap perlu dinilai sebagai kategori serangan yang dinyatakan kit.
+11. Sajikan rekomendasi dalam Bahasa Indonesia dengan bagian berikut:
     - **Peran dan Analisis Kit**: simpulkan role, scaling, dan pola damage dari deskripsi skill/konstelasi yang tersedia.
-    - **Artefak**: set utama dan alternatif, main stat Sands/Goblet/Circlet, serta substat berurutan.
-    - **Senjata**: beberapa opsi yang sesuai tipe senjata, dengan alasan singkat; jangan mengarang efek atau ranking yang tidak didukung.
+    - **Artefak**: pilih hanya dari katalog artefak aktual di bawah; set utama dan alternatif, main stat Sands/Goblet/Circlet, serta substat berurutan. Cocokkan bonus set dengan jenis damage kit.
+    - **Senjata**: pilih hanya dari katalog yang cocok dengan tipe senjata karakter di bawah; jangan menyebut senjata di luar katalog atau mengubah rarity/passive-nya.
     - **Tim yang Direkomendasikan**: jika user belum menetapkan tim, pilih sampai tiga karakter hanya dari roster kandidat lokal di bawah. Jelaskan role tiap anggota, reaksi, dan sinerginya. Jika roster kosong, katakan bahwa kandidat lokal tidak tersedia dan jangan mengarang nama karakter.
     - **Stat Prioritas**: stat yang dicari dan alasan berdasarkan scaling/reaksi. Angka target ER atau rasio hanya boleh berupa estimasi yang diberi label dan dijelaskan bergantung pada tim/rotasi.
     - **Rotasi Singkat**: urutan aksi yang sesuai kit dan tim.
-7. Jika user sudah memilih rekan tim, evaluasi pilihan tersebut terlebih dahulu; boleh berikan alternatif dari roster dengan alasan. Bedakan fakta database, panduan lokal, dan inferensi model.
-8. Database karakter tidak menyimpan lembar stat tempur lengkap. Jangan mengaku membaca base stat atau membuat angka stat spesifik yang tidak diberikan.
+12. Jika user sudah memilih rekan tim, evaluasi pilihan tersebut terlebih dahulu; boleh berikan alternatif dari roster dengan alasan. Bedakan fakta database dan inferensi model.
+13. Untuk build eksperimen, tetap pilih artefak, senjata, main stat, substat, tim, dan rotasi yang paling masuk akal berdasarkan scaling/kit. Tandai bagian yang merupakan kompromi atau estimasi, bukan meniadakan rekomendasi.
+14. Database karakter tidak menyimpan lembar stat tempur lengkap. Jangan mengaku membaca base stat atau membuat angka stat spesifik yang tidak diberikan.
+15. Kembalikan hanya satu objek JSON valid tanpa Markdown fence atau teks sebelum/sesudahnya. Isi tepat 4 artefak, 4 senjata, dan 4 tim berbeda; rank masing-masing 1 sampai 4. Salin ID senjata/artefak dan slug teammate persis dari katalog/roster di bawah. Jangan pernah mengusulkan senjata di luar tipe {$weapon}.
+
+Struktur JSON wajib:
+{"role_analysis":"...","artifacts":[{"rank":1,"id":"artifact-id","main_stats":{"sands":"...","goblet":"...","circlet":"..."},"substats":["..."],"reason":"..."}],"weapons":[{"rank":1,"id":"weapon-id","reason":"..."}],"teams":[{"rank":1,"teammate_slugs":["character-slug"],"reason":"..."}],"stat_priorities":["..."],"rotation":["..."]}
 
 ---
 
@@ -133,8 +114,14 @@ Anda adalah **Genshin Build AI**, asisten Genshin Impact (target patch konfigura
 ### [KONFIGURASI TIM — entity data]
 {$teamText}
 
-### [ROSTER KARAKTER LOKAL — KANDIDAT TIM]
+### [ROSTER KARAKTER DALAM DATABASE — KANDIDAT TIM]
 {$teamCandidatesText}
+
+### [KATALOG SENJATA AKTUAL — TIPE {$weapon}]
+{$weaponCandidatesText}
+
+### [KATALOG ARTEFAK AKTUAL]
+{$artifactCandidatesText}
 
 ---
 
@@ -151,9 +138,8 @@ Anda adalah **Genshin Build AI**, asisten Genshin Impact (target patch konfigura
 
 ---
 
-### [RETRIEVED THEORYCRAFT KNOWLEDGE — RAG]
-Status knowledge build lokal: {$knowledgeStatus}
-{$theorycraftText}
+### DASAR REKOMENDASI
+Gunakan data karakter, talent, konstelasi, mekanik tim, dan pengetahuan Genshin Anda untuk menyusun rekomendasi lengkap. Jangan batasi rekomendasi pada build populer.
 PROMPT;
     }
 
@@ -165,9 +151,73 @@ PROMPT;
 
         return collect($candidates)
             ->map(function (array $candidate): string {
-                return '- '.($candidate['name'] ?? 'Unknown')
+                return '- '.($candidate['slug'] ?? 'unknown-slug')
+                    .' | '.($candidate['name'] ?? 'Unknown')
                     .' ('.($candidate['vision'] ?? 'UNKNOWN')
                     .' / '.($candidate['weapon_type'] ?? 'UNKNOWN').')';
+            })
+            ->implode("\n");
+    }
+
+    protected function weaponCandidateText(array $weapons): string
+    {
+        if ($weapons === []) {
+            return 'Katalog senjata untuk tipe ini tidak tersedia saat ini. Jangan mengarang nama, rarity, atau passive senjata.';
+        }
+
+        return collect($weapons)
+            ->take(40)
+            ->map(function (array $weapon): string {
+                $details = array_filter([
+                    isset($weapon['rarity']) ? $weapon['rarity'].'★' : null,
+                    $weapon['subStat'] ?? $weapon['secondary_stat'] ?? null,
+                    $weapon['passiveName'] ?? $weapon['passive_name'] ?? null,
+                    $weapon['passiveDesc'] ?? $weapon['passive_description'] ?? null,
+                ]);
+
+                $line = '- '.($weapon['id'] ?? 'unknown-id')
+                    .' | '.($weapon['name'] ?? 'Unknown weapon');
+
+                if ($details !== []) {
+                    $line .= ': '.implode(' | ', $details);
+                }
+
+                return mb_strlen($line) > 420
+                    ? mb_substr($line, 0, 420).'...'
+                    : $line;
+            })
+            ->implode("\n");
+    }
+
+    protected function artifactCandidateText(array $artifacts): string
+    {
+        if ($artifacts === []) {
+            return 'Katalog artefak tidak tersedia saat ini. Jangan mengarang nama atau bonus set.';
+        }
+
+        return collect($artifacts)
+            ->take(60)
+            ->map(function (array $artifact): string {
+                $twoPiece = trim((string) ($artifact['2-piece_bonus'] ?? ''));
+                $fourPiece = trim((string) ($artifact['4-piece_bonus'] ?? ''));
+                $line = '- '.($artifact['id'] ?? 'unknown-id')
+                    .' | '.($artifact['name'] ?? 'Unknown set');
+
+                if (isset($artifact['max_rarity'])) {
+                    $line .= ' ('.$artifact['max_rarity'].'★)';
+                }
+
+                if ($twoPiece !== '') {
+                    $line .= ' | 2pc: '.$twoPiece;
+                }
+
+                if ($fourPiece !== '') {
+                    $line .= ' | 4pc: '.$fourPiece;
+                }
+
+                return mb_strlen($line) > 520
+                    ? mb_substr($line, 0, 520).'...'
+                    : $line;
             })
             ->implode("\n");
     }
@@ -176,19 +226,17 @@ PROMPT;
     {
         $talents = collect($character->skill_data ?? [])
             ->filter(fn ($skill) => is_array($skill))
-            ->take(4)
             ->map(function (array $skill): string {
                 $name = trim((string) ($skill['name'] ?? 'Talent'));
                 $unlock = trim((string) ($skill['unlock'] ?? ''));
                 $description = preg_replace('/\s+/u', ' ', trim((string) ($skill['description'] ?? ''))) ?? '';
 
-                if (mb_strlen($description) > 500) {
-                    $description = mb_substr($description, 0, 500).'...';
+                if (mb_strlen($description) > 1000) {
+                    $description = mb_substr($description, 0, 1000).'...';
                 }
 
                 $upgrades = collect($skill['upgrades'] ?? [])
                     ->filter(fn ($upgrade) => is_array($upgrade))
-                    ->take(5)
                     ->map(fn (array $upgrade) => trim((string) ($upgrade['name'] ?? '').' '.(string) ($upgrade['value'] ?? '')))
                     ->filter()
                     ->implode('; ');
@@ -234,10 +282,4 @@ PROMPT;
             : 'Data talent karakter tidak tersedia; jangan menyimpulkan mekanik kit yang spesifik.';
     }
 
-    protected function knowledgeStatusText(bool $available): string
-    {
-        return $available
-            ? 'Tersedia sebagai referensi terkurasi, tetapi bukan batas analisis.'
-            : 'Tidak tersedia; susun analisis build dari kit karakter dan tandai rekomendasi sebagai inferensi.';
-    }
 }

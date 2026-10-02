@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Models\BuildKnowledge;
 use App\Models\Character;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -66,38 +65,4 @@ class KnowledgeDataCommandsTest extends TestCase
         }
     }
 
-    public function test_knowledge_status_reports_character_coverage_and_missing_guides(): void
-    {
-        $diluc = $this->createCharacter('diluc', 'Diluc');
-        $this->createCharacter('furina', 'Furina');
-
-        BuildKnowledge::create([
-            'character_id' => $diluc->id,
-            'category' => 'artifact_priorities',
-            'title' => 'Diluc artifacts',
-            'content' => 'Curated guide',
-            'target_content' => 'universal',
-            'patch_version' => '7.0',
-        ]);
-
-        $this->assertSame(0, Artisan::call('genshin:knowledge-status', ['--patch' => '7.0']));
-        $output = Artisan::output();
-
-        $this->assertStringContainsString('50%', $output);
-        $this->assertStringContainsString('Furina', $output);
-        $this->assertStringNotContainsString('Diluc', $output);
-        $this->assertStringContainsString('Weapon and artifact catalogs are not stored', $output);
-    }
-
-    private function createCharacter(string $slug, string $name): Character
-    {
-        return Character::create([
-            'slug' => $slug,
-            'name' => $name,
-            'vision' => 'PYRO',
-            'weapon_type' => 'SWORD',
-            'rarity' => 5,
-            'patch_version' => '7.0',
-        ]);
-    }
 }
