@@ -34,8 +34,7 @@ function genshinApp() {
 
         /* =================================================
          * INIT
-         * ================================================= */
-
+         * ================================================= */       
         async initApp() {
 
             this.genshinApiBase =
@@ -50,18 +49,74 @@ function genshinApp() {
 
             await Promise.all([
                 this.loadCharacters(),
-                this.loadEntityCatalogs()
+                this.loadEntityCatalogs(),
+                this.loadHistory()
             ]);
 
             this.scrollChat();
-
         },
-
-
         /* =================================================
          * LOAD CHARACTERS
          * ================================================= */
 
+                
+/* =================================================
+ * LOAD CHAT HISTORY
+ * ================================================= */
+
+    async loadHistory() {
+
+        try {
+
+            const response = await fetch(
+                '/api/chat/history/' + encodeURIComponent(this.sessionToken),
+                {
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                }
+            );
+
+            if (!response.ok) {
+                throw new Error('HTTP ' + response.status);
+            }
+
+            const json = await response.json();
+
+            if (
+                json.success &&
+                Array.isArray(json.messages) &&
+                json.messages.length > 0
+            ) {
+
+                this.chatMessages = json.messages.map(message => ({
+                    ...message,
+                    isGreeting: false,
+                    sourceQuery: ''
+                }));
+
+                console.debug(
+                    '[CHAT] Riwayat berhasil dimuat:',
+                    this.chatMessages.length,
+                    'pesan'
+                );
+
+            } else {
+
+                console.debug('[CHAT] Belum ada riwayat percakapan.');
+
+            }
+
+        } catch (error) {
+
+            console.error(
+                '[CHAT] Gagal memuat riwayat percakapan:',
+                error
+            );
+
+        }
+
+    },
         async loadCharacters() {
 
             try {
@@ -1318,14 +1373,19 @@ function genshinApp() {
         /* =================================================
          * RESET
          * ================================================= */
-
         clearChat() {
+
+            // Buat sesi baru tanpa menghapus riwayat lama di database.
+            this.sessionToken =
+                'session_' + Math.random().toString(36).substring(2, 12);
+
+            localStorage.setItem('genshin_session', this.sessionToken);
 
             this.chatMessages = [
                 {
                     role: 'assistant',
                     content:
-                        '🔄 Percakapan telah direset.\n\n' +
+                        'Percakapan baru telah dimulai.\n\n' +
                         'Silakan tanyakan sesuatu tentang Genshin Impact.',
                     isGreeting: true,
                     sourceQuery: ''
@@ -1333,7 +1393,6 @@ function genshinApp() {
             ];
 
             this.chatInput = '';
-
             this.chatStreamStarted = false;
 
             this.$nextTick(() => {
@@ -1341,8 +1400,6 @@ function genshinApp() {
             });
 
         },
-
-
         /* =================================================
          * SCROLL
          * ================================================= */
