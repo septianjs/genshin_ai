@@ -1,0 +1,38 @@
+[33mcommit 1df1556d53c95a7a566ca14dd079274e394e5ff7[m
+Author: septianjs <143950248+septianjs@users.noreply.github.com>
+Date:   Fri Oct 2 07:47:21 2026 +0700
+
+    refactor: remove local build knowledge and item catalogs
+
+ README.md                                          |   13 [32m+[m[31m-[m
+ app/Console/Commands/ImportBuildKnowledge.php      |  249 [31m-[m
+ app/Console/Commands/KnowledgeStatus.php           |   61 [31m-[m
+ app/Console/Commands/SyncRemoteGenshinDataset.php  |  166 [31m-[m
+ app/Http/Controllers/BuildController.php           |    6 [32m+[m[31m-[m
+ app/Models/BuildKnowledge.php                      |   34 [31m-[m
+ app/Models/Character.php                           |    9 [31m-[m
+ app/Models/GenshinArtifact.php                     |   30 [31m-[m
+ app/Models/GenshinWeapon.php                       |   34 [31m-[m
+ app/Services/Ai/ChatbotService.php                 |  323 [32m+[m[31m-[m
+ app/Services/Ai/RecommendationEngine.php           |  662 [32m+[m[31m-[m
+ app/Services/Genshin/GenshinApiService.php         |   16 [32m+[m
+ app/Services/Ingestion/KnowledgeDatasetParser.php  |  553 [31m--[m
+ .../Ingestion/RemoteGenshinDatasetService.php      |  738 [31m---[m
+ app/Services/Ingestion/ThirdPartyGenshinClient.php |   59 [32m+[m
+ app/Services/Nvidia/NvidiaService.php              |  143 [32m+[m[31m-[m
+ .../QueryUnderstanding/EntityExtractor.php         |    8 [32m+[m
+ .../QueryUnderstanding/IntentClassifier.php        |    7 [31m-[m
+ app/Services/Rag/ContextBuilder.php                |  168 [32m+[m[31m-[m
+ app/Services/Rag/SimilarityEngine.php              |   38 [31m-[m
+ app/Services/Rag/VectorStoreService.php            |  499 [31m--[m
+ config/services.php                                |    4 [32m+[m[31m-[m
+ ...ove_local_build_knowledge_and_item_catalogs.php |   64 [32m+[m
+ database/seeders/DatabaseSeeder.php                |    2 [31m-[m
+ database/seeders/TheorycraftSeeder.php             | 6505 [31m--------------------[m
+ resources/views/app.blade.php                      |   38 [32m+[m[31m-[m
+ tests/Feature/BuildRecommendationApiTest.php       | 1078 [32m+[m[31m---[m
+ tests/Feature/KnowledgeDataCommandsTest.php        |   35 [31m-[m
+ tests/Feature/NvidiaServiceTest.php                |    2 [32m+[m
+ tests/Feature/QueryUnderstandingTest.php           |   14 [32m+[m[31m-[m
+ tests/Feature/VectorStoreServiceTest.php           |  138 [31m-[m
+ 31 files changed, 978 insertions(+), 10718 deletions(-)

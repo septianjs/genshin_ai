@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Character extends Model
 {
@@ -34,4 +35,8 @@ class Character extends Model
         'synced_at' => 'datetime',
         'rarity' => 'integer',
     ];
+    public function buildKnowledge(): HasMany
+{
+    return $this->hasMany(BuildKnowledge::class);
+}
 }

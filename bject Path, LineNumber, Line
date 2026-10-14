@@ -1,0 +1,78 @@
+[33mcommit 1df1556d53c95a7a566ca14dd079274e394e5ff7[m
+Author:     septianjs <143950248+septianjs@users.noreply.github.com>
+AuthorDate: Fri Oct 2 07:47:21 2026 +0700
+Commit:     septianjs <143950248+septianjs@users.noreply.github.com>
+CommitDate: Fri Oct 2 07:47:21 2026 +0700
+
+    refactor: remove local build knowledge and item catalogs
+
+[1mdiff --git a/database/migrations/2026_10_01_000001_remove_local_build_knowledge_and_item_catalogs.php b/database/migrations/2026_10_01_000001_remove_local_build_knowledge_and_item_catalogs.php[m
+[1mnew file mode 100644[m
+[1mindex 0000000..bb037d3[m
+[1m--- /dev/null[m
+[1m+++ b/database/migrations/2026_10_01_000001_remove_local_build_knowledge_and_item_catalogs.php[m
+[36m@@ -0,0 +1,64 @@[m
+[32m+[m[32m<?php[m
+[32m+[m
+[32m+[m[32muse Illuminate\Database\Migrations\Migration;[m
+[32m+[m[32muse Illuminate\Database\Schema\Blueprint;[m
+[32m+[m[32muse Illuminate\Support\Facades\Schema;[m
+[32m+[m
+[32m+[m[32mreturn new class extends Migration[m
+[32m+[m[32m{[m
+[32m+[m[32m    public function up(): void[m
+[32m+[m[32m    {[m
+[32m+[m[32m        Schema::dropIfExists('build_knowledge');[m
+[32m+[m[32m        Schema::dropIfExists('genshin_artifacts');[m
+[32m+[m[32m        Schema::dropIfExists('genshin_weapons');[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    public function down(): void[m
+[32m+[m[32m    {[m
+[32m+[m[32m        Schema::create('build_knowledge', function (Blueprint $table) {[m
+[32m+[m[32m            $table->id();[m
+[32m+[m[32m            $table->foreignId('character_id')->constrained('characters')->cascadeOnDelete();[m
+[32m+[m[32m            $table->string('category', 50)->index();[m
+[32m+[m[32m            $table->string('title', 200)->nullable();[m
+[32m+[m[32m            $table->longText('content');[m
+[32m+[m[32m            $table->string('target_content', 50)->default('universal')->index();[m
+[32m+[m[32m            $table->json('embedding')->nullable();[m
+[32m+[m[32m            $table->string('patch_version', 10)->default('7.0')->index();[m
+[32m+[m[32m            $table->string('source')->nullable();[m
+[32m+[m[32m            $table->timestamps();[m
+[32m+[m[32m        });[m
+[32m+[m
+[32m+[m[32m        Schema::create('genshin_artifacts', function (Blueprint $table) {[m
+[32m+[m[32m            $table->id();[m
+[32m+[m[32m            $table->string('slug', 150)->unique();[m
+[32m+[m[32m            $table->string('name', 200);[m
+[32m+[m[32m            $table->string('rarity', 100)->nullable();[m
+[32m+[m[32m            $table->string('two_piece_bonus', 500)->nullable();[m
+[32m+[m[32m            $table->string('four_piece_bonus', 1000)->nullable();[m
+[32m+[m[32m            $table->json('raw_data')->nullable();[m
+[32m+[m[32m            $table->string('source', 500)->nullable();[m
+[32m+[m[32m            $table->string('patch_version', 20)->default('7.0')->index();[m
+[32m+[m[32m            $table->boolean('is_validated')->default(false)->index();[m
+[32m+[m[32m            $table->timestamps();[m
+[32m+[m[32m            $table->index('name');[m
+[32m+[m[32m        });[m
+[32m+[m
+[32m+[m[32m        Schema::create('genshin_weapons', function (Blueprint $table) {[m
+[32m+[m[32m            $table->id();[m
+[32m+[m[32m            $table->string('slug', 150)->unique();[m
+[32m+[m[32m            $table->string('name', 200);[m
+[32m+[m[32m            $table->string('weapon_type', 50)->nullable()->index();[m
+[32m+[m[32m            $table->unsignedTinyInteger('rarity')->nullable()->index();[m
+[32m+[m[32m            $table->string('base_attack', 100)->nullable();[m
+[32m+[m[32m            $table->string('secondary_stat', 200)->nullable();[m
+[32m+[m[32m            $table->string('passive_name', 300)->nullable();[m
+[32m+[m[32m            $table->text('passive_description')->nullable();[m
+[32m+[m[32m            $table->json('raw_data')->nullable();[m
+[32m+[m[32m            $table->string('source', 500)->nullable();[m
+[32m+[m[32m            $table->string('patch_version', 20)->default('7.0')->index();[m
+[32m+[m[32m            $table->boolean('is_validated')->default(false)->index();[m
+[32m+[m[32m            $table->timestamps();[m
+[32m+[m[32m            $table->index('name');[m
+[32m+[m[32m        });[m
+[32m+[m[32m    }[m
+[32m+[m[32m};[m

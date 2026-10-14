@@ -14,6 +14,10 @@ class NvidiaService
 
     protected string $model;
 
+    protected string $embeddingModel;
+
+    protected int $embeddingTimeout;
+
     protected int $timeout;
 
     protected int $connectTimeout;
@@ -32,9 +36,14 @@ class NvidiaService
             '/'
         );
 
-        $this->model = config(
-            'services.nvidia.model',
-            'nvidia/nemotron-3.5-lightning-30b-a3b'
+        $this->embeddingModel = config(
+            'services.nvidia.embedding_model',
+            'nvidia/nemotron-3-embed-1b'
+        );
+
+        $this->embeddingTimeout = (int) config(
+            'services.nvidia.embedding_timeout',
+            30
         );
 
         // Timeout konfigurasi dipisahkan secara terukur agar gagal terkontrol sebelum PHP timeout (60s)
@@ -51,6 +60,16 @@ class NvidiaService
         return !empty($this->apiKey)
             && str_starts_with(trim($this->apiKey), 'nvapi-');
     }
+
+    
+/**
+ * Menghasilkan embedding asli dari NVIDIA NIM.
+ *
+ * query   = pertanyaan pengguna
+ * passage = dokumen pengetahuan untuk RAG
+ *
+ * Mengembalikan null jika embedding gagal dibuat.
+ */
 
     /**
      * Status konfigurasi NVIDIA.
@@ -680,6 +699,96 @@ class NvidiaService
         }
     }
 
+
+        public function generateEmbedding(
+        string $text,
+        string $inputType = 'query'
+    ): ?array {
+        $text = trim($text);
+
+        if ($text === '') {
+            return null;
+        }
+
+        if (! $this->hasApiKey()) {
+            Log::warning('[NVIDIA EMBEDDING] API key tidak tersedia.');
+            return null;
+        }
+
+        if (! in_array($inputType, ['query', 'passage'], true)) {
+            throw new \InvalidArgumentException(
+                'inputType harus query atau passage.'
+            );
+        }
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . trim($this->apiKey),
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
+            ])
+                ->connectTimeout($this->connectTimeout)
+                ->timeout($this->embeddingTimeout)
+                ->post("{$this->baseUrl}/embeddings", [
+                    'model' => $this->embeddingModel,
+                    'input' => $text,
+                    'input_type' => $inputType,
+                    'encoding_format' => 'float',
+                ]);
+
+            if (! $response->successful()) {
+                Log::error('[NVIDIA EMBEDDING] API error.', [
+                    'status' => $response->status(),
+                    'model' => $this->embeddingModel,
+                    'body' => $this->sanitizeLogString(
+                        mb_substr($response->body(), 0, 500)
+                    ),
+                ]);
+
+                return null;
+            }
+
+            $embedding = $response->json('data.0.embedding');
+
+            if (! is_array($embedding) || $embedding === []) {
+                Log::warning(
+                    '[NVIDIA EMBEDDING] Vektor tidak ditemukan.'
+                );
+
+                return null;
+            }
+
+            foreach ($embedding as $value) {
+                if (! is_numeric($value)) {
+                    Log::warning(
+                        '[NVIDIA EMBEDDING] Vektor tidak valid.'
+                    );
+
+                    return null;
+                }
+            }
+
+            $vector = array_map('floatval', $embedding);
+
+            Log::info('[NVIDIA EMBEDDING] Berhasil.', [
+                'model' => $this->embeddingModel,
+                'input_type' => $inputType,
+                'dimensions' => count($vector),
+            ]);
+
+            return $vector;
+        } catch (\Throwable $e) {
+            Log::error('[NVIDIA EMBEDDING] Gagal.', [
+                'type' => get_class($e),
+                'message' => $this->sanitizeLogString(
+                    $e->getMessage()
+                ),
+                'model' => $this->embeddingModel,
+            ]);
+
+            return null;
+        }
+    }
     /**
      * Membuat response fallback ketika NVIDIA tidak tersedia.
      */
