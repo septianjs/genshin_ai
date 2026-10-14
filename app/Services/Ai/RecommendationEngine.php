@@ -242,10 +242,24 @@ class RecommendationEngine
                 $catalogCache->put('build_artifact_catalog', $artifactCandidates, 21600);
             }
         }
+        $buildKnowledge = \Illuminate\Support\Facades\DB::table('build_knowledge')
+                    ->where('character_id', $character->id)
+                    ->where(function($query) use ($preferredRole) {
+                        if ($preferredRole !== '') {
+                            $query->where('category', 'LIKE', "%{$preferredRole}%")
+                                ->orWhere('content', 'LIKE', "%{$preferredRole}%");
+                        }
+                    })
+                    ->limit(2)
+                    ->pluck('content')
+                    ->implode("\n\n");
 
         $mechanicsData = [
             'resonances' =>
                 $resonances,
+
+            'theorycraft_knowledge' => 
+                $buildKnowledge,   
 
             'reactions' =>
                 $reactions,

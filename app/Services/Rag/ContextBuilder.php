@@ -25,14 +25,24 @@ class ContextBuilder
         $constellationLevel = $mechanicsData['constellation']['constellation_level'] ?? 0;
         $characterKitText = $this->characterKitText($character, (int) $constellationLevel);
         $contentMode = $mechanicsData['content_profile']['name'] ?? 'Spiral Abyss';
+        
+        // --- LOGIKA RAG & THEORYCRAFT ---
+        $theorycraftKnowledge = $mechanicsData['theorycraft_knowledge'] ?? '';
+        $theorycraftText = $theorycraftKnowledge !== '' 
+            ? $theorycraftKnowledge 
+            : "Tidak ada panduan spesifik tambahan. Gunakan logika optimal berdasarkan kit.";
+
+        // --- INSTRUKSI ROLE EKSKLUZIF ---
+        $preferredRole = trim((string) $preferredRole);
+        $roleInstruction = $preferredRole !== ''
+            ? "PENTING: User secara eksplisit meminta gaya main/role: strtoupper({$preferredRole}). Anda WAJIB menyesuaikan artefak, senjata, dan main stat (Sands/Goblet/Circlet) untuk mendukung role ini sepenuhnya. Jika role ini berbeda dari fungsi standar karakter (misal healer menjadi DPS), abaikan stat standar dan fokus pada stat ofensif (ATK/EM/CRIT/DMG Bonus)."
+            : 'Tidak ada role eksperimen khusus. Pilih role paling optimal berdasarkan kit standar karakter.';
+
+        // --- DATA TIM & KATALOG ---
         $teamCharacters = $mechanicsData['team'] ?? [];
         $teamCandidatesText = $this->teamCandidateText($teamCandidates);
         $weaponCandidatesText = $this->weaponCandidateText($weaponCandidates);
         $artifactCandidatesText = $this->artifactCandidateText($artifactCandidates);
-        $preferredRole = trim((string) $preferredRole);
-        $roleInstruction = $preferredRole !== ''
-            ? "Role eksperimen yang diminta user: {$preferredRole}. Anda wajib membuat rekomendasi untuk role ini, sekalipun berbeda dari role populer atau panduan lokal. Jelaskan trade-off dan cara memaksimalkan role tersebut; jangan menggantinya dengan build standar."
-            : 'Tidak ada role eksperimen khusus. Pilih role berdasarkan kit karakter, tetapi tetap berikan build lengkap.';
 
         // 1. Data Mekanik Tim (Resonansi & Reaksi)
         $resonancesText = '';
@@ -65,6 +75,7 @@ class ContextBuilder
             $teamText = "- Belum ditentukan.\n";
         }
 
+        // --- PENYUSUNAN PROMPT ---
         return <<<PROMPT
 Anda adalah **Genshin Build AI**, asisten Genshin Impact (target patch konfigurasi: v{$patch}).
 
@@ -132,6 +143,12 @@ Struktur JSON wajib:
 {$reactionsText}
 ---
 
+### [THEORYCRAFTING & BUILD KNOWLEDGE]
+Panduan komunitas dan referensi gaya bermain untuk karakter dan role ini:
+{$theorycraftText}
+
+---
+
 ### [TARGET KONTEN]
 **Mode**: {$contentMode}
 **Fokus Karakteristik**: {$mechanicsData['content_profile']['description']}
@@ -139,10 +156,9 @@ Struktur JSON wajib:
 ---
 
 ### DASAR REKOMENDASI
-Gunakan data karakter, talent, konstelasi, mekanik tim, dan pengetahuan Genshin Anda untuk menyusun rekomendasi lengkap. Jangan batasi rekomendasi pada build populer.
+Gunakan panduan Theorycrafting (jika ada), digabung dengan data karakter, talent, mekanik tim, dan pengetahuan Genshin Anda untuk menyusun rekomendasi lengkap. Jangan batasi rekomendasi pada build populer.
 PROMPT;
     }
-
     protected function teamCandidateText(array $candidates): string
     {
         if ($candidates === []) {

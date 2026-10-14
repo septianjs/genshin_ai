@@ -109,7 +109,7 @@ class EntityExtractor
 
         if (
             preg_match(
-                '/\b(main\s+dps|main\s+damage|sub\s+dps|sub\s+damage|dps|support|healer|shielder|buffer|driver)\b/iu',
+                '/\b(main\s+dps|sub\s+dps|dps|support|healer|shielder|buffer|driver|physical|em|elemental\s+mastery|hyperbloom|vaporize|melt|aggravate)\b/iu',
                 $query,
                 $roleMatch
             )
